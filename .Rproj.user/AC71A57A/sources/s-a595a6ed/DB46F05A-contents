@@ -1,0 +1,200 @@
+
+
+
+
+
+#' CheckGeneID
+#'
+#' @param row_names Character vector of row names
+#' @param database c("gencode","ensembl", "AnnotationHub") defaults to "gencode" to provide gencode-compatible strings.
+#'
+#' @return Character string describing gene id type of `row_names`
+#' @export
+#'
+
+CheckGeneID <- function(row_names,database="gencode"){
+
+  if (length(row_names[grepl("ENS",row_names)]) > 5){ #  table(grepl("ENS",keys(ensdb, "SYMBOL"))) == 4
+    if (database=="gencode"){
+      return("ensembl_gene_id")
+    } else if (database=="ensembl"){
+      return("ensembl_gene_id")
+    }  else {
+      return("GENEID")
+    }
+  } else if (!(all(is.na(suppressWarnings(as.numeric(row_names)))))){
+    if (database=="gencode"){
+      return("entrez_id")
+    } else if (database=="ensembl"){
+      return("entrezgene_id")
+    } else {
+      return("ENTREZID")
+    }
+
+  } else {
+    if (database=="gencode"){
+      return("gene_name")
+    } else if (database=="ensembl"){
+      return("hgnc_symbol")
+    } else {
+      return("SYMBOL")
+    }
+  }
+}
+
+
+
+### --- GENE ANNOTATIONS
+
+
+
+#' GetAnnot
+#'
+#' @param sce_object SingleCellExperiment object
+#' @param AH_str String to indicate relevant annotation database. Defaults to "AH73881", which is GRCh38, ensembl97 hsa
+#'
+#' @return The input `sce_object` containing additional columns to rowData(sce_object)
+#' @export
+#'
+#' @examples
+#' ##Download the relevant Ensembl annotation database using AnnotationHub resources
+#' library(AnnotationHub)
+#' ah <- AnnotationHub()
+#' query(ah, c("Mus musculus", "Ensembl", "v97"))
+#' ##Annotate each gene with its chromosome location
+#' ens.mm.v97 <- ah[["AH73905"]]
+#' location <- mapIds(ens.mm.v97, keys=rownames(sce.416b), keytype="GENEID", column="SEQNAME")
+#' ##Identify the mitochondrial genes
+#' is.mito <- which(location=="MT")
+
+GetAnnot <- function(sce_object, AH_str="AH73881"){
+  #ahensdbAnnotationHub()
+  require(BiocFileCache)
+  require(AnnotationHub)
+
+  gene_id <- CheckGeneID(rownames(sce_object),database="AH")
+  genes_to_convert <- setdiff(c("GENEID", "SYMBOL", "ENTREZID"),gene_id)
+
+  ensdb <- AnnotationHub()[[AH_str]]
+  rowData(sce_object)[[gene_id]] <- rownames(sce_object)
+  rowData(sce_object)[[genes_to_convert[[1]]]] <- mapIds(ensdb,
+                                       keys=rownames(sce_object),
+                                       keytype=gene_id, column=genes_to_convert[[1]])
+  rowData(sce_object)[[genes_to_convert[[2]]]] <- mapIds(ensdb,
+                                        keys=rownames(sce_object),
+                                        keytype=gene_id, column=genes_to_convert[[2]])
+  rowData(sce_object)$SEQNAME <- mapIds(ensdb,
+                                        keys=rownames(sce_object),
+                                        keytype=gene_id, column="SEQNAME")
+  sce_object <- sce_object[!(duplicated(rownames(sce_object))),]
+  return(sce_object)
+}
+
+
+#' GetGeneLengths
+#'
+#' @param dat_obj  Data object, rownames are genes. Gene lengths will be appended
+#' @param GL c("human", "mouse") Type of gene length annotations Rdata to load
+#'
+#' @return Either the input object containing gene lengths or a vector of gene lengths, depending on class of input object
+#' @export
+
+GetGeneLengths <- function(dat_obj,GL="human"){
+  # usethis::use_data(gene_lengths_HTSeq_gencodev38, gene_lengths_gencodevM10, internal = TRUE)
+  # https://stackoverflow.com/questions/12391195/include-data-examples-in-developing-r-packages
+
+  if (!(GL=="human")){
+    gene_lengths=gene_lengths_gencodevM10
+  } else {
+    gene_lengths=gene_lengths_HTSeq_gencodev38
+  }
+  #gene_lengths=ifelse(GL=="human",gene_lengths_HTSeq_gencodev38,gene_lengths_gencodevM10)
+#  ## Get gene lengths
+#  load(GENE_LENGTHS_PATH)
+
+  ## Match IDs
+  gene_type_str = CheckGeneID(rownames(dat_obj))
+  idx <- match(rownames(dat_obj), gene_lengths[[gene_type_str]])
+  dat_obj <- dat_obj[which(!is.na(idx)),]
+  idx <- idx[!is.na(idx)]
+  gene_length_vec <- gene_lengths[idx,]$gene_length
+
+  if (class(dat_obj)[1] %in% c("DFrame", "data.frame", "Matrix", "matrix")){
+    dat_obj$genelengths <- gene_length_vec
+    return(dat_obj)
+  } else if (class(dat_obj)[1] %in% c("SingleCellExperiment","SummarizedExperiment")){
+    rowData(dat_obj)$genelengths <- gene_length_vec
+    return(dat_obj)
+  } else {
+    return(gene_length_vec)
+  }
+
+}
+
+
+### --- GENE ID CONVERSIONS
+
+#' convertHuman2Mouse
+#'
+#' Converts a character vector of human gene ids to mouse gene ids
+#'
+#' @param input_genes Input human genes, either a character vector or list of vectors
+#'
+#' @return Mouse genes (mgi_symbol), either a character vector or list of vectors
+#' @export
+#'
+
+convertHuman2Mouse <- function(input_genes){
+  # Basic function to convert human to mouse gene names
+  # https://www.r-bloggers.com/2016/10/converting-mouse-to-human-gene-names-with-biomart-package/
+  require(biomaRt)
+
+  human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+  mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+  x = ifelse(class(input_genes) == "list",unique(as.vector(unlist(input_genes))),input_genes)
+  gene_id_str = CheckGeneID(x,database="ensembl")
+  genesV2 = getLDS(attributes = c(gene_id_str), filters = gene_id_str, values = x , mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+
+  if (class(input_genes) == "list"){
+    convert <- setNames(genesV2[,2],genesV2[,1])
+    mousex <- lapply(names(input_genes), function(gs_str){
+                                as.vector(convert[input_genes[[gs_str]]])})
+  } else {
+    mousex <- genesV2[, 2]
+  }
+
+  return(mousex)
+}
+
+#' convertMouse2Human
+#'
+#' Converts a character vector of mouse gene ids to human gene ids
+#'
+#' @param input_genes Input mouse genes, either a character vector or list of vectors
+#'
+#' @return Human genes (hgnc_symbol), either a character vector or list of vectors
+#' @export
+#'
+convertMouse2Human <- function(input_genes){
+  # Basic function to convert mouse to human gene names
+  # https://www.r-bloggers.com/2016/10/converting-mouse-to-human-gene-names-with-biomart-package/
+  require(biomaRt)
+
+  human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+  mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+  x = ifelse(class(input_genes) == "list",unique(as.vector(unlist(input_genes))),input_genes)
+  genesV2 = getLDS(attributes = c("mgi_symbol"), filters = "mgi_symbol", values = x , mart = mouse, attributesL = c("hgnc_symbol"), martL = human, uniqueRows=T)
+
+  if (class(input_genes) == "list"){
+    convert <- setNames(genesV2[,2],genesV2[,1])
+    humanx <- lapply(names(input_genes), function(gs_str){
+      as.vector(convert[input_genes[[gs_str]]])})
+  } else {
+    humanx <- genesV2[, 2]
+  }
+  return(humanx)
+}
+
+

@@ -1,0 +1,642 @@
+######################################################################################################
+##
+##  FUNCTIONS FOR PROCESSING SINGLE-CELL RNASEQ DATA FROM RAW COUNTS
+##
+
+
+
+## --- Example
+# source("./scInstall.R")
+# source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/scfunc/scProcess.R")
+# sce_lst <- lapply(sce_lst, function(x) {GetAnnot(x)})
+# sce_lst <- lapply(sce_lst, function(x) {NormSC(x)})
+
+# ref_NS <- HumanPrimaryCellAtlasData()
+# ref_IMMUNE <- DatabaseImmuneCellExpressionData()
+# ref_lst <- list(HPCA=ref_NS, IMMUNE=ref_IMMUNE)
+# sce_lst <- lapply(sce_lst, function(x) {CellAnnot(x, ref_lst)})
+
+# sce_lst <- lapply(sce_lst, function(x) {runPCA(x, exprs_values = "logcounts")})
+# sce_lst <- lapply(sce_lst, function(x) {runPCA(x, exprs_values = "counts", name="rawPCA")})
+# sce_lst <- lapply(sce_lst, function(x) {runTSNE(x, exprs_values = "logcounts", perplexity =iPerplex)})
+
+
+
+
+
+######################################################################################################
+##  NORMALISATION
+
+#' NormSC
+#'
+#' Perform scran normalisation
+#'
+#' @param sce_object SingleCellExperiment object
+#' @param seed_x Seed for scran::quickCluster()
+#' @param min_mean Sets min.mean for scran::computeSumFactors(). Defaults to 0.1 which is appropriate for 10X data
+#'
+#' @return SingleCellExperiment object with logcounts assay and sizeFactors()
+#' @export
+#'
+#' @examples
+#' sce_lst <- lapply(sce_lst, function(x) {GetAnnot(x)})
+#' sce_lst <- lapply(sce_lst, function(x) {NormSC(x)})
+#'
+NormSC <- function(sce_object,seed_x=1000,min_mean=0.1){
+  set.seed(seed_x)
+  clusters <- quickCluster(sce_object)
+  sce_object <- scran::computeSumFactors(sce_object, cluster=clusters, min.mean=min_mean)
+  sce_object <- logNormCounts(sce_object)
+  return(sce_object)
+}
+
+######################################################################################################
+##  CLUSTERING
+
+#' ClusterKNN
+#'
+#' @param sce_object SingleCellExperiment object
+#' @param K Number of neighbours to pass to igraph::buildSNNGraph()
+#' @param use_assay Assay of `sce_object` to use
+#' @param suffix Character string, optional suffix i.e. "Clust_Knn20_<suffix>"
+#'
+#' @return SingleCellExperiment object with appended cluster labels (i.e. "Clust_Knn20")
+#' @export
+#' @import igraph
+
+ClusterKNN <- function(sce_object, K=20, use_assay="logcounts", suffix=NULL){
+  g <- buildSNNGraph(sce_object, k=K,  assay.type = use_assay)
+  clust <- igraph::cluster_walktrap(g)$membership
+  if (!(is.null(suffix))){
+    sce_object[[paste0("Clust_Knn",K,"_",suffix)]] <- as.vector(clust)
+  } else {
+    sce_object[[paste0("Clust_Knn",K)]] <- as.vector(clust)
+  }
+  return(sce_object)
+}
+
+
+#' RunDimRed
+#'
+#' Wrapper function for running the 3 main dimension reduction algorithms used in scater: PCA, TSNE and UMAP.
+#'
+#' @param sce_x SingleCellExperiment object
+#' @param use_assay Assay of `sce_x` to use
+#' @param subset_genes Character vector of genes to subset to
+#' @param suffix Character string to add to dimred name
+#'
+#' @return SingleCellExperiment object with new dimension reduction slots
+#' @export
+#'
+
+
+RunDimRed <- function(sce_x, use_assay="logcounts",
+                      subset_genes=NULL, suffix=NULL){
+
+  if (!(is.null(subset_genes))){
+    if (!(is.null(suffix))){
+      suffix = "_subset"
+    }
+    sce_x <- scater::runPCA(sce_x, name=paste0("PCA",suffix), exprs_values=use_assay,subset_row=subset_genes)
+    sce_x <- scater::runTSNE(sce_x, name=paste0("TSNE",suffix), exprs_values=use_assay,subset_row=subset_genes)
+    sce_x <- scater::runUMAP(sce_x, name=paste0("UMAP",suffix), exprs_values=use_assay,subset_row=subset_genes)
+  } else if (!(is.null(suffix))){
+    sce_x <- scater::runPCA(sce_x, name=paste0("PCA",suffix), exprs_values=use_assay)
+    sce_x <- scater::runTSNE(sce_x, name=paste0("TSNE",suffix), exprs_values=use_assay)
+    sce_x <- scater::runUMAP(sce_x, name=paste0("UMAP",suffix), exprs_values=use_assay)
+  } else {
+    sce_x <- scater::runPCA(sce_x, name="PCA", exprs_values=use_assay)
+    sce_x <- scater::runTSNE(sce_x, name="TSNE", exprs_values=use_assay)
+    sce_x <- scater::runUMAP(sce_x, name="UMAP", exprs_values=use_assay)
+  }
+  return(sce_x)
+}
+
+
+
+
+
+######################################################################################################
+##  BATCH/INTEGRATE
+
+#' asCountMat
+#'
+#' Helper function
+#'
+#' @param sce_obj SingleCellExperiment object
+#' @param mat_type Character string c("matrix", "dgCMatrix")
+#'
+#' @return SingleCellExperiment object
+#' @export
+#'
+
+asCountMat <- function(sce_obj, mat_type="matrix"){
+  if (mat_type=="matrix"){
+    counts(sce_obj) <- as.matrix(counts(sce_obj))
+  } else if (mat_type=="dgCMatrix"){
+    counts(sce_obj) <- as(counts(sce_obj), "dgCMatrix")
+  }
+  return(sce_obj)
+}
+
+#' sceBind
+#'
+#' @param sce_lst Named list of SingleCellExperiment objects
+#' @param colDat_to_keep Character vector of colData columns of objects in `sce_lst` to keep
+#' @param process TRUE or FALSE, whether or not to process the combined output SingleCellExperiment object. Uses NormSC() and RunDimRed()
+#' @param rowsumThresh If process = TRUE, this is the gene filtering threshold for the number of cells required to express each gene
+#'
+#' @return SingleCellExperiment containing all cells from objects in `sce_lst`
+#' @export
+#' @importFrom scMerge sce_cbind
+
+sceBind <- function(sce_lst,colDat_to_keep=NULL, process=FALSE, rowsumThresh=5){
+  require(scMerge)
+
+  if(is.null(names(sce_lst))){
+    sce_names <- paste0("batch_", 1:length(sce_lst))
+  } else {
+    sce_names <- names(sce_lst)
+  }
+
+  sce_lst <- lapply(sce_lst,function(x){asCountMat(x)})
+
+  sce_obj <- sce_cbind(sce_lst,method ="union",
+                                  cut_off_batch =0,
+                                  cut_off_overall =0,
+                                  exprs ="counts",
+                                  batch_names = sce_names,
+                                  colData_names=colDat_to_keep)
+
+  counts(sce_obj) <- as(counts(sce_obj), "dgCMatrix")
+
+  if (process){
+    sce_obj <- sce_obj[rowSums(counts(sce_obj)>0)>rowsumThresh]
+    sce_obj <- NormSC(sce_obj)
+    sce_obj <- RunDimRed(sce_obj)
+  }
+  return(sce_obj)
+}
+
+
+
+#' ConvertSeurat
+#'
+#' @param sce_obj SingleCellExperiment object
+#'
+#' @return Seurat object
+#' @export
+#'
+#' @import Seurat
+
+ConvertSeurat <- function(sce_obj){
+
+  if (!(is.null(SingleCellExperiment::altExpNames(sce_obj)))){
+    sce_obj <- SingleCellExperiment::removeAltExps(sce_obj)
+  }
+  return(Seurat::as.Seurat(sce_obj))
+
+}
+
+#' SeuratIntegrate
+#'
+#' Uses Seurat to integrate a SingleCellExperiment object or list of objects,
+#' using the the main Experiment (mainExpName) rom the input `sce_obj` object/s.
+#'
+#' This function uses `Seurat::SelectIntegrationFeatures()`, `Seurat::FindIntegrationAnchors()` and `Seurat::IntegrateData()`
+#' to integrate the batches in `sce_obj$split_col`. It returns a SingleCellExperiment that contains a new logcounts assay (`n_features` x cells).
+#'
+#' Note that, by default, Seurat calculates all pairwise anchors for integration,
+#' however, when integrating only two datasets it appears to transform the second onto the first.
+#' For this reason, the first batch (i.e. `unique(sce_obj$ChemV)[1]`) won't have adjusted logcount values
+#' but the latter will.
+#'
+#'
+#' @param sce_obj SingleCellExperiment object or list of SingleCellExperiment objects
+#' @param split_col Character string to provide to Seurat::SplitObject(), should indicate batches to integrate
+#' @param n_features Numeric, number of variable genes to obtain from `Seurat::FindIntegrationAnchors()` for data integration
+#'
+#' @return Integrated SingleCellExperiment object
+#' @export
+#' @import Seurat
+
+
+SeuratIntegrate <- function(sce_obj,split_col=NULL, n_features=2000){
+  require(Seurat)
+
+  if (is.list(sce_obj)){
+    seurat_lst <- lapply(sce_obj,function(x){ConvertSeurat(x)})
+  } else if (is.null(split_col)){
+    message("Please provide `split_col`")
+    return(NULL)
+  } else {
+    seurat_obj <- ConvertSeurat(sce_obj)
+    seurat_lst <- Seurat::SplitObject(seurat_obj,split.by =split_col)
+  }
+
+  features <- Seurat::SelectIntegrationFeatures(object.list = seurat_lst,nfeatures=n_features)
+  enrich.anchors <- Seurat::FindIntegrationAnchors(object.list = seurat_lst, anchor.features = features)
+  obj.combined <- Seurat::IntegrateData(anchorset = enrich.anchors)
+  sce_obj <- as.SingleCellExperiment(obj.combined)
+  sce_obj <- RunDimRed(sce_obj)
+  return(sce_obj)
+}
+
+
+
+
+
+######################################################################################################
+##  PSEUDOBULK ANALYSIS
+
+
+### --- PSEUDOBULK HELPER FUNCTIONS
+
+#' buildDesign
+#'
+#' Builds a design matrix for pseudobulk analysis. Assumes an additive model. If multiple factors, factor_str_vec should be in order.
+#'
+#' @param dge_x DGEList object
+#' @param factor_str_vec Character string or character vector indicating the column/s in `dge_x$samples` to build the design matrix with
+#'
+#' @return Design matrix as model.matrix object
+#' @export
+#'
+
+buildDesign <- function(dge_x,factor_str_vec){
+
+  if (!(all(factor_str_vec %in% colnames(dge_x$samples)))){
+    message("WARNING: Factor strings should be in dge$samples")
+    return(NULL)
+  } else {
+    factor_x <- factor(dge_x$samples[[factor_str_vec[1]]])
+  }
+
+  if (length(factor_str_vec)==1){
+    return(model.matrix( ~0 + factor_x))
+  } else if (length(factor_str_vec)==2){
+    factor_y <- factor(dge_x$samples[[factor_str_vec[2]]])
+    return(model.matrix( ~0 + factor_x + factor_y))
+  } else if (length(factor_str_vec)==3){
+    factor_y <- factor(dge_x$samples[[factor_str_vec[2]]])
+    factor_z <- factor(dge_x$samples[[factor_str_vec[3]]])
+    return(model.matrix( ~0 + factor_x + factor_y + factor_z))
+  } else {
+    message("Please manually build design matric with 'model.matrix()'")
+    return(NULL)
+  }
+}
+
+#' filterByDesign
+#'
+#' Filters lowly expressed genes in `dge_x` using the design matrix. Design matrix is either provided with `use_design` or built using character string/s with `factor_str_vec`.
+#'
+#' @param dge_x DGEList object
+#' @param factor_str_vec Character string or character vector indicating the column/s in `dge_x$samples` to build the design matrix with
+#' @param use_design Model.matrix object, the user can provide a design matrix to filter by
+#'
+#' @return Filtered DGEList object
+#' @export
+#'
+
+filterByDesign <- function(dge_x, factor_str_vec=NULL,use_design=NULL){
+
+  if (!(is.null(use_design))){
+    message("Filtering with 'filterByExpr' using design matrix provided")
+    return(dge_x[filterByExpr(dge_x, design=use_design), keep.lib.sizes=FALSE])
+  }
+
+  if (!(all(factor_str_vec %in% colnames(dge_x$samples)))){
+    message("WARNING: Factor strings should be in dge$samples")
+    return(NULL)
+  } else if (is.null(factor_str_vec)){
+    message("WARNING: Please provide either 'use_design' or 'factor_str_vec'")
+    return(NULL)
+  }
+
+  if (length(factor_str_vec)==1){
+    message("Filtering with 'filterByExpr' using group")
+    return(dge_x[filterByExpr(dge_x, group=factor_x), keep.lib.sizes=FALSE])
+  } else {
+    design_mat <- buildDesign(dge_x, factor_str_vec)
+    if (!(is.null(design_mat))){
+      message("Filtering with 'filterByExpr' using design matrix")
+      message("Returning with design matrix")
+      dge_x$design <- design_mat
+      return(dge_x[filterByExpr(dge_x, design=design_mat), keep.lib.sizes=FALSE])
+    } else {
+      return(NULL)
+    }
+  }
+}
+
+#' filterByThreshold
+#'
+#' Filters lowly expressed genes in `dge_x` according to the thresholds provided by `cpm_threshold` and `sample_threshold`,
+#' where we keep genes with a logCPM >= `cpm_threshold` in at least (`sample_threshold`*100)% of samples
+#'
+#' @param dge_x DGEList object
+#' @param cpm_threshold Numeric, logCPM threshold
+#' @param sample_threshold Numeric between 0 and 1 indicatig proportion of samples
+#' @param plot Whether or not to plot logCPM histogram
+#'
+#' @return Filtered DGEList object
+#' @export
+#'
+
+filterByThreshold <- function(dge_x, cpm_threshold=0.5, sample_threshold=0.1, plot=FALSE){
+  ## Remove genes that are lowly expressed across the 10 main cell types
+  message("Filtering by threshold")
+  keep = rowMeans(edgeR::cpm(y=dge_x, log = TRUE) >= cpm_threshold) >= sample_threshold
+  if (plot){
+    hist(edgeR::cpm(dge_x[keep, ], log = TRUE))
+  }
+
+  message("Keeping genes:")
+  print(table(keep))
+  dge_x <- dge_x[keep, ]
+  return(dge_x)
+}
+
+#' normDGE
+#'
+#' Normalise DGElist using edgeR
+#'
+#' @param dge_x DGEList object
+#' @param prior_n prior.count to use when calculating log values
+#' @param RPKM TRUE or FALSE, whether or not to calculate RPKM/logRPKM
+#' @param log_RPKM TRUE or FALSE, if RPKM is TRUE should we also log-transform?
+#' @param GENE_LENGTHS_PATH Gene length annotation to use
+#'
+#' @return DGEList object that contains normalised counts
+#' @export
+
+normDGE <- function(dge_x, prior_n=1, RPKM=FALSE, log_RPKM=FALSE,
+                    GENE_LENGTHS_PATH='gene_lengths_HTSeq_gencodev38.Rdata'){
+
+  dge_x <- edgeR::calcNormFactors(dge_x)
+  dge_x$logCPM <- edgeR::cpm(dge_x, log=TRUE, prior.count = prior_n,
+                                      normalized.lib.sizes=TRUE, lib.size=dge_x$samples$lib.size)
+
+  if (RPKM == TRUE){
+    # Get gene lengths
+    dge_x <- GetGeneLengths(dge_x)
+    dge_x$genes$lengths <- dge_x$genelengths
+
+    if (log_RPKM){
+      dge_x$logRPKM <- edgeR::rpkm(dge_x, log=log_RPKM, prior.count = prior_n,
+                            gene.length=dge_x$genes$lengths, normalized.lib.sizes=TRUE)
+    } else {
+      dge_x$RPKM <- edgeR::rpkm(dge_x, log=log_RPKM, prior.count = prior_n,
+                            gene.length=dge_x$genes$lengths, normalized.lib.sizes=TRUE)
+    }
+  }
+  return(dge_x)
+}
+
+#' correctBatch
+#'
+#' Use limma to correct batches
+#'
+#' @param dge_x DGEList object
+#' @param preserve_vec Character vector of factors to preserve
+#' @param batch_str Character string indicating batch and should be removed
+#' @param prior_n prior.count to use when calculating log values
+#'
+#' @return DGEList object containing batch corrected data in `dge_x$batch_corrected`
+#' @export
+#'
+
+correctBatch <- function(dge_x, preserve_vec, batch_str, prior_n=2){
+
+  if (!(all(c(preserve_vec,batch_str) %in% colnames(dge_x$samples)))){
+    message("WARNING: Factor strings should be in dge$samples")
+    return(NULL)
+  }
+  if (!("norm.factors" %in% colnames(dge_x$samples))){
+    message("Calculating norm.factors")
+    dge_x <- edgeR::calcNormFactors(dge_x)
+  }
+  ## Correct batched
+  dge_x$batch_corrected <- limma::removeBatchEffect(cpm(dge_x, log=TRUE, prior.count = prior_n),
+                                             design = buildDesign(dge_x,preserve_vec),
+                                             batch=factor(dge_x$samples[[batch_str]]))
+  return(dge_x)
+}
+
+
+#' fixClusterIDs
+#'
+#' Helper function for splitBigClusts()
+#'
+#' @param sce_x SingleCellExperiment object
+#' @param pb_cluster_str Character string, colData() column that indicates cluster
+#' @param new_clusts
+#'
+#' @return SingleCellExperiment object with new cluster labels in `pb_cluster_str`
+#' @export
+#'
+
+fixClusterIDs <- function(sce_x, pb_cluster_str,new_clusts){
+  extra_cellIDs <- setNames(sce_x[[pb_cluster_str]],colnames(sce_x))
+  extra_cellIDs <- extra_cellIDs[!(names(extra_cellIDs) %in% names(new_clusts))]
+  new_clusts <- c(new_clusts,extra_cellIDs)
+  sce_x[[pb_cluster_str]] <- as.vector(new_clusts[colnames(sce_x)])
+  return(sce_x)
+}
+
+
+#' splitBigClusts
+#'
+#' Uses Kmeans clustering to split large groups into smaller groups to help select pseudobulk cluster size.
+#' Calls on splitPB() and fixClusterIDs().
+#'
+#' @param sce_x SingleCellExperiment object
+#' @param pb_cluster_str Character string, colData() column that indicates cluster
+#' @param size_thresh Numeric threshold to identify "too large" clusters
+#' @param subset_label_str Character string. This is in case you want to subcluster within a patient etc.
+#' @param clust_to_label_dict Named character vector to map between pseudobulk cluster (`pb_cluster_str`) and label (`subset_label_str`)
+#' @param optimal_clust_size Numeric indicating optimal cluster size
+#' @param min_clust_size Numeric indicating minimal cluster size. If a cluster is smaller than `min_clust_size` cells, the function merges it with the most similar cluster
+#'
+#' @return SingleCellExperiment
+#' @export
+#'
+#' @examples
+#'
+#' splitBigClusts(sce, "PB_clusters", 800, subset_label_str="PatientID",
+#'     clust_to_label_dict=setNames(sce$PatientID, sce$ImmunePB))
+
+splitBigClusts <- function(sce_x, pb_cluster_str, size_thresh,
+                           subset_label_str=NULL, clust_to_label_dict=NULL,
+                           optimal_clust_size=500, min_clust_size=200){
+
+  ## Check if clusters are too large
+  big_clusters <- names(table(sce_x[[pb_cluster_str]])[table(sce_x[[pb_cluster_str]])>size_thresh])
+
+  if (length(big_clusters)==0){
+    message("Clusters are all smaller than 'size_thresh'")
+    return(NULL)
+  }
+
+  ## Split large clusters
+  new_clusts <- c()
+  for (i_clust in big_clusters){
+    if (!(is.null(subset_label_str))){
+      i_sce <- sce_x[,sce_x[[subset_label_str]] == as.vector(clust_to_label_dict[i_clust])]
+    } else {
+      i_sce <- sce_x
+    }
+    cluster_vec <- splitPB(i_sce,
+                           i_sce[[pb_cluster_str]],
+                           i_clust,
+                           optimal_size=optimal_clust_size,
+                           min_size=min_clust_size)
+    new_clusts <- c(new_clusts, cluster_vec)
+  }
+
+  ## Fix cluster IDs
+  sce_x <- fixClusterIDs(sce_x, pb_cluster_str,new_clusts)
+
+  return(sce_x)
+}
+
+
+#' mergeClust
+#'
+#' Helper function for splitPB()
+#'
+#' @param clust_x Integer indicatin cluster to merge
+#' @param dist_mat_x Matrix-like data object from splitPB()
+#' @param clust_vec_x Vector of cluster IDs
+#'
+#' @return A vector of new cluster IDs, updated from `clust_vec_x`
+#' @export
+#'
+
+mergeClust <- function(clust_x, dist_mat_x, clust_vec_x){
+  dist_mat_x <- as.matrix(dist_mat_x)
+  dist_vec <- as.vector(dist_mat[as.integer(clust_x),])
+  dist_vec[dist_vec == 0] <- Inf
+  merge_with <- which.min(dist_vec)
+  clust_vec_x <- replace(clust_vec_x, clust_vec_x==clust_x, merge_with)
+  return(clust_vec_x)
+}
+
+#' splitPB
+#'
+#' @param sce_x SingleCellExperiment object. If only a subset of clusters is to be split this object should already by subset. i.e subset_label_str in splitBigClusts()
+#' @param clust_vec Vector of current cluster labels
+#' @param clust_to_split Cluster string or integer indicating cluster to be split
+#' @param optimal_size Numeric indicating optimal cluster size
+#' @param min_size Numeric indicating minimal cluster size. If a cluster is smaller than `min_size` cells, the function merges it with the most similar cluster
+#'
+#' @return Named vector of cluster labels, names are `sce_x` colnames
+#' @export
+#'
+
+splitPB <- function(sce_x, clust_vec, clust_to_split,
+                    optimal_size=500,min_size=200){
+
+  numbCells <- sum(clust_vec == clust_to_split)
+  numbClust <- ceiling(numbCells/optimal_size)
+
+  dat_x <- SingleCellExperiment::logcounts(sce_x[,clust_vec == clust_to_split])
+  dat_x <- dat_x[rowSums(dat_x>0)>10,]
+  k_x <- kmeans(t(dat_x), numbClust)
+  cluster_vec <-  as.vector(k_x$cluster[colnames(dat_x)])
+
+  ## Merge nearby clusters
+  smol <- names(table(k_x$cluster)[table(k_x$cluster)<min_size])
+  if (length(smol)>0){
+    dist_mat <- as.matrix(dist(k_x$centers))
+    if (length(smol)==1){
+      cluster_vec <- mergeClust(smol, dist_mat, cluster_vec)
+    } else {
+      for (i_smol in smol){
+        cluster_vec <- mergeClust(i_smol, dist_mat, cluster_vec)
+      }
+    }}
+
+  clusters <- paste0(clust_to_split,"_", cluster_vec)
+  names(clusters) <- colnames(dat_x)
+  return(clusters)
+}
+
+
+
+
+### --- PSEUDOBULK FUNCTIONS
+
+
+#' QuickPseudoBulk
+#'
+#' Aggregates `cluster_labels` into pseudobulk samples and discards samples with small library sizes. Is called on by GetPseudoBulk_DGE()
+#'
+#' @param sce_object SingleCellExperiment object
+#' @param cluster_labels Character vector of cluster labels to be treated as pseudobulk samples
+#' @param rowDat TRUE or FALSE, whether or not to include rowData from `sce_object` as `dge$genes` in output DGEList
+#'
+#' @return DGEList list of pseudobulk samples
+#' @export
+#'
+
+QuickPseudoBulk <- function(sce_object, cluster_labels, rowDat=FALSE){
+
+  Summed_Sce <- aggregateAcrossCells(sce_object, id=cluster_labels)
+
+  if (rowDat){
+    DGE_Summed_sce <- DGEList(counts(Summed_Sce),remove.zeros=TRUE,
+                              genes = rowData(sce_object))
+  } else {
+    DGE_Summed_sce <- DGEList(counts(Summed_Sce),remove.zeros=TRUE)
+  }
+
+  ## Discard labels with very small library sizes
+  discarded <- isOutlier(DGE_Summed_sce$samples$lib.size, log=TRUE,
+                         type="lower")
+  print("Samples to discard:")
+  print(table(discarded))
+  DGE_Summed_sce <- DGE_Summed_sce[,!discarded]
+  return(DGE_Summed_sce)
+}
+
+
+#' GetPseudoBulk_DGE
+#'
+#' Aggregates `cluster_labels` from `sce_object` into pseudobulk samples.
+#' Function includes getting gene annotations, discrading samples with small library sizes,
+#' filters lowly expressed genes according to `cpm_threshold` and`sample_threshold` and normalises for library size.
+#' Calls on GetAnnot(), QuickPseudoBulk(), filterByThreshold() and normDGE()
+#'
+#' @param sce_object SingleCellExperiment object
+#' @param cluster_labels Character vector of cluster labels to be treated as pseudobulk samples
+#' @param cpm_threshold Numeric, logCPM threshold
+#' @param sample_threshold Numeric between 0 and 1 indicating proportion of samples
+#' @param logRPKM TRUE or FALSE, whether or not to calculate logRPKM in addition to logCPM
+#' @param GENE_LENGTHS Gene length annotation to use
+#'
+#' @return DGEList object
+#' @export
+#'
+
+GetPseudoBulk_DGE <- function(sce_object, cluster_labels, cpm_threshold=0.5, sample_threshold=0.1,
+                              logRPKM=FALSE,GENE_LENGTHS='gene_lengths_HTSeq_gencodev38.Rdata'){
+
+  ## Get row data
+  sce_object <- GetAnnot(sce_object)
+
+  ## Pseudobulk
+  dge_object <- QuickPseudoBulk(sce_object, cluster_labels,rowDat=TRUE)
+
+  ## Gene filtering
+  dge_object <- filterByThreshold(dge_object)
+
+  ## Normalise
+  dge_object <- normDGE(dge_object, prior_n=1, RPKM=logRPKM,log_RPKM=logRPKM,GENE_LENGTHS_PATH=GENE_LENGTHS)
+
+  return(dge_object)
+
+}
+
+

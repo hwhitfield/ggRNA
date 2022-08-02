@@ -1,0 +1,116 @@
+######################################################################################################
+##
+##  HELPER FUNCTIONS FOR WRANGLING SC DATA
+##
+
+
+### --- SCE OBJ WRANGLING -------------
+
+#' Seurat2SCE
+#'
+#' Helper function for converting seurat objects to SingleCellExperiment
+#'
+#' @param seurat_obj Input Seurat object
+#' @param dat_count Character string indicating which Seurat assay to use
+#'
+#' @return SingleCellExperiment object
+#' @export
+#'
+
+Seurat2SCE <- function(seurat_obj, dat_count="raw"){
+  if (dat_count == "raw"){
+    return(SingleCellExperiment(assays=list(counts=as.matrix(GetAssayData(seurat_obj, "data")))))
+  } else if (dat_count == "logcounts"){
+    return(SingleCellExperiment(assays=list(logcounts=as.matrix(GetAssayData(seurat_obj, "data")))))
+  }
+
+}
+
+
+#' Check_obj
+#'
+#' Checks the class of input object and converts if required
+#'
+#' @param dat_obj SingleCellExperiment, SummarizedExperiment or Seurat object
+#' @param desired_class Character string indicating desired class, one of c("Seurat", "SummarizedExperiment","SingleCellExperiment")
+#' @param dat_assays Either "raw" or "logcounts" indicating the Seurat assay to use when converting Seurat objects to SingleCellExperiment
+#'
+#' @return Object of desired class
+#' @export
+#'
+
+Check_obj <- function(dat_obj, desired_class, dat_assays = "raw"){
+
+  message(paste0("  Changing object class to ", desired_class))
+
+  if (desired_class == "Seurat"){
+    if (class(dat_obj)[1] %in% c("SummarizedExperiment", "SingleCellExperiment")){
+      if (names(assays(dat_obj)) == "counts"){
+        output_obj <- as.Seurat(dat_obj, counts="counts", data=NULL)
+      } else {
+        output_obj <- as.Seurat(dat_obj, counts="counts", data = "logcounts")
+      }
+
+    } else {
+      output_obj <- dat_obj
+    }
+  } else if (desired_class == "SummarizedExperiment"){
+    if (class(dat_obj)[1] == "Seurat"){
+      output_obj <- as.SingleCellExperiment(dat_obj)
+    }
+  } else if (desired_class == "SingleCellExperiment"){
+    if (class(dat_obj)[1] == "Seurat"){
+      output_obj <- Seurat2SCE(dat_obj, dat_count=dat_assays)
+    } else if (class(dat_obj)[1] == "SummarizedExperiment"){
+      if ("logcounts" %in% names(assays(dat_obj)))
+        output_obj <- SingleCellExperiment(assays=list(counts=counts(dat_obj), logcounts=logcounts(dat_obj)))
+    } else {
+      output_obj <- dat_obj
+    }
+  }
+
+  return(output_obj)
+}
+
+
+
+
+#' GetProps_perPatient
+#'
+#' Calculates a proportions table for two data annotations. Returns a table where rows are 'label', columns are 'group', and values are percentages
+#'
+#' @param dat_obj SingleCellExperiment object or subset-able data.frame object
+#' @param label Character string indicating the labels to calculate proportions for
+#' @param group Character string indicating the group to calculate proportions within
+#'
+#' @return data.frame, where rownames are values of `label`, colnames are `group` and values are percentages
+#' @export
+#'
+#' @import dplyr
+#' @import rlang
+#'
+
+GetProps_perPatient <- function(dat_obj, label, group){
+
+  require(dplyr)
+  if (class(dat_obj)[1] == "SingleCellExperiment"){
+    dat_obj <- as.data.frame(colData(dat_obj))
+  }
+  dat_obj <- dat_obj[,colnames(dat_obj) %in% c(label,group)]
+  df <- dat_obj %>% dplyr::count(!!!syms(c(group, label))) %>%
+                dplyr::group_by(!!!syms(c(group))) %>%
+                   dplyr::mutate(prop = prop.table(n)*100)
+
+  df <- reshape2::dcast(df, as.formula(paste0(label," ~ ",group)),value.var="prop")
+  rownames(df) <- df[[label]]
+  df <- df[,!(colnames(df) == label)]
+  return(df)
+}
+
+
+
+
+
+
+
+

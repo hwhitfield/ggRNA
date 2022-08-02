@@ -1,0 +1,365 @@
+######################################################################################################
+##
+##  PROCESS DATA
+##
+
+setwd("/stornext/Home/data/allstaff/w/whitfield.h/scDECAF/")
+### Load functions, libraries an directories
+if (substr(getwd(), 2, 9) == "stornext"){
+  
+  source("./scripts/BenchmarkingScripts/BenchmarkFunctions.R")
+  source("./scripts/scDECAF_devel.R")
+  # source("./scripts/InstallPackages_scDECAF.R")
+  datasetsFolder <- "./datasets/"
+  saveFolder <- "/stornext/Home/data/allstaff/w/whitfield.h/scDECAF/data/"
+  figureFolder <- "/stornext/Home/data/allstaff/w/whitfield.h/scDECAF/figures/benchmarking_phenotype/"
+  
+} else {
+  
+  source("W:\\scDECAF\\scripts\\BenchmarkFunctions.R")
+  source("W:\\scDECAF\\scripts\\scDECAF_devel.R")
+  # source("W:\\scDECAF\\scripts\\InstallPackages_scDECAF.R")
+  datasetsFolder <- "W:\\scDECAF\\datasets\\"
+  saveFolder <- "W:\\scDECAF\\data\\"
+  figureFolder <- "W:\\scDECAF\\figures\\benchmarking_phenotype\\"
+}
+
+requiredPackages <-
+  c("ggplot2",
+    "DropletUtils",
+    "sctransform",
+    "Seurat",
+    "SingleCellExperiment",
+    "scater",
+    "scran",
+    "scRNAseq",
+    "tidyverse",
+    "PMA",
+    "GSEABase",
+    "VISION",
+    "scDECAF", "scde", "AUCell", "org.Hs.eg.db"
+  )
+
+for(pkg in requiredPackages){
+  suppressWarnings(suppressMessages(library(pkg, character.only = T)))
+}
+
+
+
+
+######################################################################################################
+### 
+###  PBMC DATA                                            
+###
+
+### --- Cell markers
+
+pb_markers <- Load_PBMC_markers()
+
+### --- Yi's PBMC dataset
+
+dir_names <- list.dirs("/stornext/General/data/academic/lab_davis/Yi_Soroor/benchmarking/10X/purifiedpbmc")
+dir_names <- grep("hg19", dir_names, value = TRUE)
+dir_names <- grep("cd34", dir_names, value = TRUE, invert = TRUE)
+celltype_names <- c("B cells", "CD14 Monocytes", #"CD34 cells", 
+                    "CD4 T helper", "CD56 NK", "Cytotoxic T cells",
+                    "Memory T cells", "Naive CD8 T cells", "Naive CD4 T cells", "Regulatory T cells")
+
+seuratObjs <- list()
+
+for(j in seq_along(dir_names)){
+  
+  projName <- celltype_names[j]
+  seuratObjs[[projName]] <- CreateSeuratObject(counts = Read10X(dir_names[j])) # , min.features = 100
+  
+}
+
+sorted.pbmc <- merge(seuratObjs[[1]],
+                     y = Reduce(c,seuratObjs[-1]),
+                     add.cell.ids = names(seuratObjs),
+                     project = "PBMC-sorted")
+
+
+### --- PBMC Stimulated experiment
+# https://www.nature.com/articles/nbt.4042#Sec22
+# We obtained 14,619 (control) and 14,446 (stimulated)
+
+stim_obj <- LoadPBMC_stim(DIR="server", condition="stim")
+control_obj <- LoadPBMC_stim(DIR="server", condition="control")
+
+PBMC_obj <-  merge(x= control_obj,
+                   y = stim_obj,
+                   add.cell.ids = c("control", "interferon-stimulated"),
+                   project = "PBMC-stim")
+
+rm(control_obj)
+rm(stim_obj)
+
+
+
+# HVG_numb = 3000
+PBMC_obj_sctransform <- prepData(PBMC_obj, feature_selection="standard", normalisation="sctransform", contains_empty_drops=FALSE)
+PBMC_obj_scran <- prepData(PBMC_obj, feature_selection="standard", normalisation="scran", contains_empty_drops=FALSE)
+PBMC_obj_scran$stim <- unlist(lapply(colnames(PBMC_obj_scran), function(x){strsplit(x, "_")[[1]][1]}))
+
+# control_obj_scran <- prepData(control_obj, feature_selection="standard", normalisation="scran", contains_empty_drops=FALSE)
+# control_obj_sctransform <- prepData(control_obj, feature_selection="standard", normalisation="sctransform", contains_empty_drops=FALSE)
+
+save(PBMC_obj_scran, PBMC_obj_sctransform,
+     file=paste(saveFolder,"scDECAF_benchmarking_objects.Rdata", sep=""))
+
+
+
+
+
+######################################################################################################
+### 
+###  EMT DATA                                            
+###
+
+
+
+load(file=paste(datasetsFolder,"TrapEMT_sce.Rdata", sep=""))
+
+## Convert IDs
+library(biomaRt)
+mart <- useDataset("hsapiens_gene_ensembl", useMart("ensembl"))
+G_list <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id","hgnc_symbol"),
+                values=rownames(TrapEMT_sce),mart= mart)
+gene_IDs <- G_list$hgnc_symbol
+names(gene_IDs) <- G_list$ensembl_gene_id
+new_rownames <- as.vector(gene_IDs[rownames(TrapEMT_sce)])
+new_rownames <- new_rownames[new_rownames != ""]
+new_rownames <- new_rownames[!(is.na(new_rownames))]
+subset_rownames <- G_list[G_list$hgnc_symbol %in% new_rownames,]$ensembl_gene_id
+TrapEMT_sce <- TrapEMT_sce[rownames(TrapEMT_sce) %in% subset_rownames,]
+rownames(TrapEMT_sce) <- new_rownames
+
+## Process data
+TrapEMT_obj_sctransform <- prepData(TrapEMT_sce, feature_selection="standard", normalisation="sctransform", contains_empty_drops=FALSE)
+TrapEMT_obj_scran <- prepData(TrapEMT_sce, feature_selection="standard", normalisation="scran", contains_empty_drops=FALSE)
+TrapEMT_obj_scran$stim <- TrapEMT_obj_scran$spatial_id
+
+
+## Save
+save(TrapEMT_obj_scran, TrapEMT_obj_sctransform,
+     file=paste(saveFolder,"scDECAF_EMT_benchmarking_objects.Rdata", sep=""))
+
+
+## PSEUDOBULK ANALYSIS ----------------
+
+load(file=paste(saveFolder,"scDECAF_EMT_benchmarking_objects.Rdata", sep=""))
+rm(TrapEMT_obj_sctransform)
+
+dim(TrapEMT_obj_scran)
+
+## Clustering
+TrapEMT_obj_scran <- runTSNE(TrapEMT_obj_scran)
+TrapEMT_obj_scran <- runUMAP(TrapEMT_obj_scran)
+TrapEMT_obj_scran <- runPCA(TrapEMT_obj_scran)
+
+## Knn
+g <- buildSNNGraph(TrapEMT_obj_scran, k=20,  assay.type = "counts")
+clust_labels <- igraph::cluster_walktrap(g)$membership
+TrapEMT_obj_scran$clusters_k20  <- factor(clust_labels)
+
+## Pseudobulk
+Summed_Sce <- aggregateAcrossCells(TrapEMT_obj_scran, id=TrapEMT_obj_scran$clusters_k20)
+TrapEMT_DGE <- DGEList(counts(Summed_Sce), 
+                          genes = rowData(TrapEMT_obj_scran))
+
+save(TrapEMT_obj_scran, file=paste(saveFolder,"TrapEMT_sce_PB.Rdata", sep=""))
+
+
+## To do: Get X Knn clusters per 'sample' group based on subclustering
+
+
+
+
+######################################################################################################
+### 
+###  EMT CELL LINE DATA                                            
+###
+## https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE147405
+# - 3 EMT Inducers
+# - 4 cell lines
+# - Across 6 mixes (Mix1, 2, 3a, 3b, 4a, 4b)
+
+library(data.table)
+library(scMerge)
+library(SingleCellExperiment)
+library(scran)
+library(scater)
+
+## Download data --------------------------------------
+EMT_SAVE_DIR <- "/stornext/Home/data/allstaff/w/whitfield.h/data/_datasets/sc/scEMT_3cellLines/raw_data/"
+SCE_SAVE_DIR <- "/stornext/Home/data/allstaff/w/whitfield.h/data/_datasets/sc/scEMT_3cellLines/"
+
+ftp_address = "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE147nnn/GSE147405/suppl/"
+cellLine_files = c("GSE147405_A549_EGF_TimeCourse","GSE147405_A549_TGFB1_TimeCourse","GSE147405_A549_TNF_TimeCourse",
+          "GSE147405_DU145_EGF_TimeCourse", "GSE147405_DU145_TGFB1_TimeCourse","GSE147405_DU145_TNF_TimeCourse",
+          "GSE147405_MCF7_EGF_TimeCourse", "GSE147405_MCF7_TGFB1_TimeCourse","GSE147405_MCF7_TNF_TimeCourse",
+          "GSE147405_OVCA420_EGF_TimeCourse", "GSE147405_OVCA420_TGFB1_TimeCourse","GSE147405_OVCA420_TNF_TimeCourse")
+cellLine_file_types = c("_UMI_matrix.csv.gz","_metadata.csv.gz")
+
+count_files = c("GSE147405_TimeCourse_Mix1", "GSE147405_TimeCourse_Mix2", 
+                "GSE147405_TimeCourse_Mix3a", "GSE147405_TimeCourse_Mix3b",
+                "GSE147405_TimeCourse_Mix4a", "GSE147405_TimeCourse_Mix4b")
+count_file_types = c("_barcode_annotations.csv.gz", "_barcode_counts.csv.gz")
+
+## Get cell-line files
+for (i_file in cellLine_files){
+  download.file(url=paste0(ftp_address,i_file,cellLine_file_types[[1]]),
+                destfile=paste0(EMT_SAVE_DIR,i_file,cellLine_file_types[[1]]))
+  download.file(url=paste0(ftp_address,i_file,cellLine_file_types[[2]]),
+                destfile=paste0(EMT_SAVE_DIR,i_file, cellLine_file_types[[2]]))
+}
+
+## Get count files
+for (i_file in count_files){
+  download.file(url=paste0(ftp_address,i_file,count_file_types[[1]]),
+                destfile=paste0(EMT_SAVE_DIR,i_file,count_file_types[[1]]))
+  download.file(url=paste0(ftp_address,i_file,count_file_types[[2]]),
+                destfile=paste0(EMT_SAVE_DIR,i_file, count_file_types[[2]]))
+}
+
+cellLine_names = unlist(lapply(strsplit(cellLine_files, "_"), function(x){paste(x[2:3], collapse="_")}))
+names(cellLine_names) <- cellLine_files
+
+## PROCESS SCRAN DATA --------------------------------------
+EMT_sce_lst <- list()
+for (iSample in cellLine_files){
+  
+  ## READ DATA -------------------------
+  message(paste0("Reading in ",iSample,"..."))
+  dt = fread(paste0(EMT_SAVE_DIR, iSample, cellLine_file_types[[1]]))
+  dt_meta = fread(paste0(EMT_SAVE_DIR, iSample, cellLine_file_types[[2]]))
+ 
+  dt_rownames <- dt$V1
+  dt <- dt[,2:ncol(dt)]
+  dt <- as.matrix(sapply(dt, as.numeric))  
+  rownames(dt) <- dt_rownames
+  
+  EMT_sce <- SingleCellExperiment(list(counts=dt)) # as(dt, "dgCMatrix")
+  colData(EMT_sce) <- DataFrame(dt_meta)
+  EMT_sce$CellID <- EMT_sce$V1
+  
+  ## NORMALISE -------------------------
+  EMT_sce$Log10LibSize <- log10(colSums(counts(EMT_sce)))
+  set.seed(1000)
+  clusters <- quickCluster(EMT_sce)
+  EMT_sce <- scran::computeSumFactors(EMT_sce, cluster=clusters, min.mean=0.1)  
+  EMT_sce <- logNormCounts(EMT_sce)
+  
+  ## SAVE -------------------------
+  EMT_sce_lst[[cellLine_names[[iSample]]]] <- EMT_sce
+  save(EMT_sce_lst, file=paste0(SCE_SAVE_DIR, "CookedEMT_sceList.Rdata"))
+}
+save(EMT_sce_lst, file=paste0(SCE_SAVE_DIR, "CookedEMT_sceList.Rdata"))
+
+
+
+## PROCESS SCTRANSFORM DATA --------------------------------------
+
+## Chosen for their high number of cells & clearer trajectories in original paper
+trimmed_cellLine_lst <- cellLine_files[grepl("A549", cellLine_files)]
+cellLine_names = unlist(lapply(strsplit(trimmed_cellLine_lst, "_"), function(x){paste(x[2:3], collapse="_")}))
+names(cellLine_names) <- trimmed_cellLine_lst
+
+features_n=3000
+EMT_sce_lst_scTransform <- list()
+for (iSample in trimmed_cellLine_lst){
+  
+  ## READ DATA -------------------------
+  message(paste0("Reading in ",iSample,"..."))
+  dt = fread(paste0(EMT_SAVE_DIR, iSample, cellLine_file_types[[1]]))
+  dt_meta = fread(paste0(EMT_SAVE_DIR, iSample, cellLine_file_types[[2]]))
+  
+  dt_rownames <- dt$V1
+  dt <- dt[,2:ncol(dt)]
+  dt <- as.matrix(sapply(dt, as.numeric))  
+  rownames(dt) <- dt_rownames
+  
+  ## MAKE SCE & FILTER -------------------------
+  EMT_obj <- SingleCellExperiment(list(counts=dt)) # as(dt, "dgCMatrix")
+  colData(EMT_obj) <- DataFrame(dt_meta)
+  EMT_obj$CellID <- EMT_obj$V1
+  colnames(EMT_obj) <- EMT_obj$CellID
+  EMT_obj <- EMT_obj[as.vector(rowSums(counts(EMT_obj))>0),]
+  EMT_obj <- EMT_obj[!(duplicated(rownames(EMT_obj))),]
+  
+  ## MAKE SEURAT OBJECT -------------------------
+  EMT_obj <- as.Seurat(EMT_obj, counts="counts", data=NULL)
+  
+  ## NORMALISE -------------------------
+  rm(dt)
+  EMT_obj <- SCTransform(object = EMT_obj, assay="originalexp", verbose = FALSE, variable.features.n = features_n)
+  
+  ## SAVE -------------------------
+  EMT_sce_lst_scTransform[[cellLine_names[[iSample]]]] <- EMT_obj
+  save(EMT_sce_lst_scTransform, file=paste0(saveFolder, "CookedEMT_A549List.Rdata"))
+}
+
+EMT_sce_lst_scTransform <- lapply(EMT_sce_lst_scTransform, function(x){RenameAssays(object = x, originalexp = 'RNA')})
+
+save(EMT_sce_lst_scTransform, file=paste0(saveFolder, "CookedEMT_A549List.Rdata"))
+
+rm(dt)
+rm(dt_meta)
+rm(EMT_obj)
+
+
+## PROCESS SCTRANSFORM DATA \\ TGFB1 --------------------------------------
+
+## Chosen for their high number of cells & clearer trajectories in original paper
+trimmed_cellLine_lst <- cellLine_files[grepl("TGFB1", cellLine_files)]
+cellLine_names = unlist(lapply(strsplit(trimmed_cellLine_lst, "_"), function(x){paste(x[2:3], collapse="_")}))
+names(cellLine_names) <- trimmed_cellLine_lst
+
+features_n=3000
+EMT_sce_lst_scTransform <- list()
+for (iSample in trimmed_cellLine_lst){
+  
+  ## READ DATA -------------------------
+  message(paste0("Reading in ",iSample,"..."))
+  dt = fread(paste0(EMT_SAVE_DIR, iSample, cellLine_file_types[[1]]))
+  dt_meta = fread(paste0(EMT_SAVE_DIR, iSample, cellLine_file_types[[2]]))
+  
+  dt_rownames <- dt$V1
+  dt <- dt[,2:ncol(dt)]
+  dt <- as.matrix(sapply(dt, as.numeric))  
+  rownames(dt) <- dt_rownames
+  
+  ## MAKE SCE & FILTER -------------------------
+  EMT_obj <- SingleCellExperiment(list(counts=dt)) # as(dt, "dgCMatrix")
+  colData(EMT_obj) <- DataFrame(dt_meta)
+  EMT_obj$CellID <- EMT_obj$V1
+  colnames(EMT_obj) <- EMT_obj$CellID
+  EMT_obj <- EMT_obj[as.vector(rowSums(counts(EMT_obj))>0),]
+  EMT_obj <- EMT_obj[!(duplicated(rownames(EMT_obj))),]
+  
+  ## MAKE SEURAT OBJECT -------------------------
+  EMT_obj <- as.Seurat(EMT_obj, counts="counts", data=NULL)
+  
+  ## NORMALISE -------------------------
+  rm(dt)
+  EMT_obj <- SCTransform(object = EMT_obj, assay="originalexp", verbose = FALSE, variable.features.n = features_n)
+  
+  ## SAVE -------------------------
+  EMT_sce_lst_scTransform[[cellLine_names[[iSample]]]] <- EMT_obj
+  save(EMT_sce_lst_scTransform, file=paste0(saveFolder, "CookedEMT_TGFB1List.Rdata"))
+}
+
+EMT_sce_lst_scTransform <- lapply(EMT_sce_lst_scTransform, function(x){RenameAssays(object = x, originalexp = 'RNA')})
+
+save(EMT_sce_lst_scTransform, file=paste0(saveFolder, "CookedEMT_TGFB1List.Rdata"))
+
+rm(dt)
+rm(dt_meta)
+rm(EMT_obj)
+
+
+######################################################################################################
+### 
+###  IZAR DATA                                            
+###

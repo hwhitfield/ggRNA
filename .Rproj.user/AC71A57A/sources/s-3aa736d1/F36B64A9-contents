@@ -1,0 +1,216 @@
+######################################################################################################
+##                                                                  
+##  PLOTTING COLOURS
+##
+##  ideas: https://lospec.com/palette-list
+##
+
+### Load using 
+# source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/Rfunc/Colours.R")
+
+
+##grDevices::rainbow(n)
+
+## -----  COLOUR PACKAGES
+
+requiredPackages <- c("pals", "unikn", "wesanderson", "ggsci")
+for (pkg in requiredPackages){
+  if (!(require(pkg, quietly=TRUE, character.only = T))){
+    install.packages(pkg)
+    suppressWarnings(suppressMessages(library(pkg, character.only = T)))
+  } else {
+    suppressWarnings(suppressMessages(library(pkg, character.only = T)))
+  }
+}
+
+## -- Manu
+if (!(require("Manu", quietly=TRUE))){
+  devtools::install_github("G-Thomson/Manu")
+  library(Manu)
+} else {
+  library(Manu)
+}
+
+
+
+
+## -----  MY FUNCTIONS 
+
+gg_color_hue <- function(n) {
+  hues = seq(15, 360, length = n)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+
+blend_colours <- function(colour1, colour2, n){
+  fc <- colorRampPalette(c(colour1, colour2))
+  pal <- fc(n)
+  
+  return(pal)
+}
+
+
+PinkBluePal <- c(blend_colours("lightpink", "hotpink", 12)[c(1, 6, 12)],
+                 blend_colours("hotpink", "maroon4", 12)[c(3, 9, 12)],
+                 blend_colours("maroon4", "slateblue", 12)[c(5, 8, 12)])
+
+
+#current_theme = function (rl = 1.2) {
+#  theme_minimal() +
+#    theme(
+#      panel.border = element_rect(colour = 'black', fill = NA),
+#      panel.grid = element_blank(),
+#      axis.title = element_text(size = rel(rl) * 1.1),
+#      axis.text = element_text(size = rel(rl)),
+#      plot.title = element_text(size = rel(rl) * 1.2),
+#      strip.background = element_rect(fill = NA, colour = 'black'),
+##      strip.text = element_text(size = rel(rl)),
+#      legend.text = element_text(size = rel(rl)),
+#      legend.title = element_text(size = rel(rl), face = 'italic')
+#    )
+#}
+
+## Usage:
+#  ggplot(aes(.)) + current_theme(rl = 1.2)
+
+
+## -----  SHAPES
+
+getShapes <- function(vec){
+  
+  n = length(vec)
+  
+  if (n <= 12){
+    shapes <- c(19,15,17,18,23,25,22,21,24,8,4,3)
+  } else {
+    shapes <- 1:25
+  }
+  
+  shapes <- shapes[1:n]
+  names(shapes) <- vec
+  return(shapes)
+}
+
+
+## -----  COLOUR BAR FUNCTIONS
+
+get_cbarVals <- function(x, n){
+  n_2 = (n-3)/2
+  return(sort(c(min(x),
+                as.vector(quantile(x, seq(0.001, 0.45, length.out=n_2))),
+                quantile(x, 0.5)[[1]],
+                as.vector(quantile(x, seq(0.55, 0.999, length.out=n_2))),
+                max(x))))
+}
+
+
+ColorBar <- function(min, max, n_ticks, col.vector, flip=TRUE){
+  
+  dat_tmp <- data.frame(datx=rep("A", length(col.vector)),daty=as.integer((seq(from=min, to=max, length.out=length(col.vector)))), col=col.vector)
+  
+  if (flip){
+    ColBar <- ggplot(dat_tmp, aes(x=datx, y=daty, fill=col))+ 
+      geom_bar(position="fill", stat="identity")+ coord_flip()+
+      scale_fill_manual(values=col.vector) +
+      scale_y_continuous(expand = c(0, 0), breaks=seq(from=0, to=1, length.out=n_ticks), labels=seq(from=min, to=max, length.out=n_ticks)) +
+      scale_x_discrete(expand = c(0, 0)) +
+      theme(legend.position = "none",
+            axis.title.y = element_blank(), axis.title.x = element_blank(),
+            axis.text.y=element_blank(), axis.text.x=element_text(size=12, face="bold", margin = margin(t = 15, r = 0, b = 0, l = 0)),
+            axis.ticks.y=element_blank(), axis.ticks.x=element_line(size=1),
+            plot.margin = unit(c(1,1,1,1), "cm"),
+            panel.grid=element_blank(), 
+            panel.border=element_rect(fill=NA,size=0.8))
+  } else {
+    ColBar <- ggplot(dat_tmp, aes(x=datx, y=daty, fill=col))+ 
+      geom_bar(position="fill", stat="identity")+ 
+      scale_fill_manual(values=col.vector) +
+      scale_y_continuous(expand = c(0, 0), breaks=seq(from=0, to=1, length.out=n_ticks), labels=seq(from=min, to=max, length.out=n_ticks)) +
+      scale_x_discrete(expand = c(0, 0)) +
+      theme(legend.position = "none",
+            axis.title.y = element_blank(), axis.title.x = element_blank(),
+            axis.text.x=element_blank(), 
+            axis.text.y=element_text(size=12,vjust =1, face="bold", margin = margin(t = 0, r = 0, b = 0, l = 0)),
+            axis.ticks.x=element_blank(), axis.ticks.y=element_line(size=1),
+            plot.margin = unit(c(0.5,13.5,0.5,13.5), "cm"),
+            panel.grid=element_blank(), 
+            panel.border=element_rect(fill=NA,size=0.8))
+  }   
+  
+  # panel.border=element_blank()
+  
+  #  plot.margin = unit(c(-1,-1,-1,-1), "cm"))
+  
+  
+  
+  return(ColBar)
+}
+
+
+## -----  GET COLOUR PALETTE
+
+## i.e.
+# lapply(GetColPal_options(n), ShowColPal)
+
+GetViridisCol <- function(get="yellow"){
+  return(ifelse(get=="yellow","#FDE825","#440C53"))
+}
+
+ShowColPal <- function(colour_vec){
+  barplot(rep(1,length(colour_vec)), 
+          col=colour_vec, 
+          yaxt = "n", space=rep(0.05,length(colour_vec)))
+}
+
+GetColPal <- function(vec){
+  
+  pal <- GetColPal_options(length(vec))[[1]]
+  names(pal) <- vec
+  return(pal)
+}
+
+GetColPal_options <- function(n){
+  
+  wes_chev <- wes_palette("Chevalier1")[1:4]
+  wes_GB1 <- wes_palette("GrandBudapest1")[1:4]
+  wes_GB2 <- wes_palette("GrandBudapest2")[1:4]
+  wes_royal2 <- wes_palette("Royal2")[1:5]
+  wes_rush <- wes_palette("Rushmore1")[1:5]
+  wes_moonrise <- wes_palette("Moonrise3")[1:5]
+  wes_6 <- wes_palette(6,name="IsleofDogs1")
+
+  
+  ColPals = list()
+  ColPals$`2` <- list(get_pal("Hoiho")[c(1,2)], c("#BC8E7D", "#485DAA"))
+  ColPals$`3` <- list(get_pal("Hoiho")[c(3, 2, 4)], c( "#7d9fc2", "#C582B2", "#51806a"))
+  ColPals$`4` <- list(c("#7d9fc2", "#C582B2", "#51806a", "#4d5f8e"), 
+                      wes_chev,wes_GB1,wes_GB2)
+  ColPals$`5` <- list(c("#A7473A", "#4B5F6C", "#B09B37", "#955F47", "#A8B9CB"),
+                   c("#DD3C51", "#313657", "#1F6683", "#6C90B9", "#D1C7B5"),
+                   c("#719E56", "#71702F", "#947163", "#623711", "#425266"),
+                   wes_royal2, wes_rush,wes_moonrise,
+                   pal_npg()(5), c("#264653", "#2a9d8f", "#e9c46a", "#f4a261", "#e76f51"))
+  ColPals$`6` <- list(c("#5FA1F7", "#83A552", "#3D4928", "#9B1F1A", "#B19F8E", "#4E0B0C"),
+                   c("#3E4331", "#AD6B17", "#66743B", "#D0C471", "#CCB62F", "#BAC4C2"),
+                   c("#AA988A", "#B66A40", "#2F414B", "#2B4B3C", "#7A3520", "#7B8BA5"),
+                   c("#325756", "#7d9fc2", "#C582B2", "#51806a", "#4d5f8e", "#A092B7"),
+                   c("#CABEE9", "#7C7189", "#FAE093", "#D04E59", "#BC8E7D", "#2F3D70"),
+                   wes_6[1:6])
+  ColPals$`7` <- list(c("#6C803A", "#7B5C34", "#AB7C47", "#CCAE42", "#D73202",  "#272318", "#D3CDBF"),
+                   c("#9e5476", "#d18b79",  "#70a18f",
+                     "#e7ebbc",
+                     "#8bbde6", "#6074ab", 
+                     "grey"))
+  
+  if (as.character(n) %in% names(ColPals)){
+    options <- ColPals[[as.character(n)]]
+    return(options)
+  } else {
+    message("Returning colour hues")
+    return(gg_color_hue(as.integer(n)))
+  }
+
+}
+
+
+

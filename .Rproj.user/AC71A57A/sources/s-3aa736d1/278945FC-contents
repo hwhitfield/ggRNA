@@ -1,0 +1,129 @@
+######################################################################################################
+#   SANKEY                                                               
+
+## --- Call using:
+# source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/Rfunc/Sankey.R")
+
+
+if (!(require("networkD3", quietly=TRUE))){
+  install.packages("networkD3")
+  library(networkD3)
+} else {
+    library(networkD3)
+}
+
+if (!(require("dplyr", quietly=TRUE))){
+  install.packages("dplyr")
+  library(dplyr)
+} else {
+  library(dplyr)
+}
+
+
+
+
+MakeSankey <- function(ListOfLabels_1, ListOfLabels_2, ListOfLabels_3){
+  require(networkD3)
+  require(dplyr)
+
+  
+  Sankey_df <- data.frame(Labels_1=as.character(ListOfLabels_1),
+                          Labels_2=as.character(ListOfLabels_2), 
+                          Labels_3=as.character(ListOfLabels_3)) 
+  Sankey_df <- Sankey_df[complete.cases(Sankey_df), ]
+  
+  Weighted_table_1to2 <- table(Sankey_df[, c("Labels_1", "Labels_2")])
+  Weighted_table_2to3 <- table(Sankey_df[, c("Labels_2", "Labels_3")])
+  
+  source_vector <- c()
+  target_vector <- c()
+  count_vector <- c()
+  
+  for (i in rownames(Weighted_table_1to2)){
+    for (j in colnames(Weighted_table_1to2)){
+      iWeight <- Weighted_table_1to2[i, j]
+      if (iWeight != 0){
+        source_vector <- append(source_vector, i)
+        target_vector <- append(target_vector, j)
+        count_vector <- append(count_vector, iWeight)
+      }
+    }
+  }
+  
+  for (i in rownames(Weighted_table_2to3)){
+    for (j in colnames(Weighted_table_2to3)){
+      iWeight <- Weighted_table_2to3[i, j]
+      if (iWeight != 0){
+        source_vector <- append(source_vector, i)
+        target_vector <- append(target_vector, j)
+        count_vector <- append(count_vector, iWeight)
+      }
+    }
+  }
+  
+  SankeyLinks_df <- data.frame(Source=source_vector,
+                               Target=target_vector,
+                               Count=count_vector)
+  nodes <- data.frame(name=c(as.character(SankeyLinks_df$Source), as.character(SankeyLinks_df$Target)) %>% unique())
+  
+  # With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
+  SankeyLinks_df$IDsource <- match(SankeyLinks_df$Source, nodes$name)-1 
+  SankeyLinks_df$IDtarget <- match(SankeyLinks_df$Target, nodes$name)-1
+  
+  p <- networkD3::sankeyNetwork(Links = SankeyLinks_df, Nodes = nodes,
+                     Source = "IDsource", Target = "IDtarget",
+                     Value = "Count", NodeID = "name", 
+                     sinksRight=FALSE,fontSize =14, fontFamily="Helvetica")
+  
+  print(p)
+  # save the widget
+  # library(htmlwidgets)
+  # saveWidget(p, file=paste0( getwd(), "/HtmlWidget/sankeyBasic1.html"))
+  
+}
+
+MakeSankey_only2 <- function(ListOfLabels_1, ListOfLabels_2){
+  library(networkD3)
+  library(dplyr)
+  
+  Sankey_df <- data.frame(Labels_1=ListOfLabels_1,
+                          Labels_2=ListOfLabels_2) 
+  
+  Weighted_table <- table(Sankey_df[, c("Labels_1", "Labels_2")])
+  
+  source_vector <- c()
+  target_vector <- c()
+  count_vector <- c()
+  
+  for (i in rownames(Weighted_table)){
+    for (j in colnames(Weighted_table)){
+      iWeight <- Weighted_table[i, j]
+      if (iWeight != 0){
+        source_vector <- append(source_vector, i)
+        target_vector <- append(target_vector, j)
+        count_vector <- append(count_vector, iWeight)
+      }
+    }
+  }
+  
+  SankeyLinks_df <- data.frame(Source=source_vector,
+                               Target=target_vector,
+                               Count=count_vector)
+  nodes <- data.frame(name=c(as.character(SankeyLinks_df$Source), as.character(SankeyLinks_df$Target)) %>% unique())
+  
+  # With networkD3, connection must be provided using id, not using real name like in the links dataframe.. So we need to reformat it.
+  SankeyLinks_df$IDsource <- match(SankeyLinks_df$Source, nodes$name)-1 
+  SankeyLinks_df$IDtarget <- match(SankeyLinks_df$Target, nodes$name)-1
+  
+  
+  sankeyNetwork(Links = SankeyLinks_df, Nodes = nodes,
+                Source = "IDsource", Target = "IDtarget",
+                Value = "Count", NodeID = "name", 
+                sinksRight=FALSE, fontSize=14, fontFamily="Helvetica")
+  
+  
+  # save the widget
+  # library(htmlwidgets)
+  # saveWidget(p, file=paste0( getwd(), "/HtmlWidget/sankeyBasic1.html"))
+  
+}

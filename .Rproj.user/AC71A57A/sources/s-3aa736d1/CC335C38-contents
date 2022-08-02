@@ -1,0 +1,412 @@
+######################################################################################################
+##
+##  FUNCTIONS FOR PROCESSING SINGLE-CELL RNASEQ DATA FROM RAW COUNTS
+##
+
+
+
+## --- Example
+# source("./scInstall.R")
+# source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/scfunc/scProcess.R")
+# sce_lst <- lapply(sce_lst, function(x) {GetAnnot(x)})
+# sce_lst <- lapply(sce_lst, function(x) {NormSC(x)})
+
+# ref_NS <- HumanPrimaryCellAtlasData()
+# ref_IMMUNE <- DatabaseImmuneCellExpressionData()
+# ref_lst <- list(HPCA=ref_NS, IMMUNE=ref_IMMUNE)
+# sce_lst <- lapply(sce_lst, function(x) {CellAnnot(x, ref_lst)})
+
+# sce_lst <- lapply(sce_lst, function(x) {runPCA(x, exprs_values = "logcounts")})
+# sce_lst <- lapply(sce_lst, function(x) {runPCA(x, exprs_values = "counts", name="rawPCA")})
+# sce_lst <- lapply(sce_lst, function(x) {runTSNE(x, exprs_values = "logcounts", perplexity =iPerplex)})
+
+
+######################################################################################################
+##  ANNOT                                                                   
+
+
+GetAnnot <- function(sce_object){
+  #ahensdbAnnotationHub()
+  ensdb <- AnnotationHub()[["AH73881"]] #GRCh38, ensembl97 hsa 
+  rowData(sce_object)$ENSEMBL <- rownames(sce_object)
+  rowData(sce_object)$SYMBOL <- mapIds(ensdb, 
+                                       keys=rownames(sce_object),
+                                       keytype="GENEID", column="SYMBOL")
+  rowData(sce_object)$SEQNAME <- mapIds(ensdb,
+                                        keys=rownames(sce_object),
+                                        keytype="GENEID", column="SEQNAME")
+  
+  sce_object <- sce_object[!(duplicated(rownames(sce_object))),]
+  # or
+  ## Download the relevant Ensembl annotation database
+  # using AnnotationHub resources
+  # library(AnnotationHub)
+  # ah <- AnnotationHub()
+  # query(ah, c("Mus musculus", "Ensembl", "v97"))
+  # Annotate each gene with its chromosome location
+  # ens.mm.v97 <- ah[["AH73905"]]
+  # location <- mapIds(ens.mm.v97, keys=rownames(sce.416b),
+  #                    keytype="GENEID", column="SEQNAME")
+  # Identify the mitochondrial genes
+  # is.mito <- which(location=="MT")
+  return(sce_object)
+}
+
+
+######################################################################################################
+##  NORMALISATION                                                                   
+
+NormSC <- function(sce_object){
+  set.seed(1000)
+  clusters <- quickCluster(sce_object)
+  
+  ## Adds sizeFactors() to sce object
+  sce_object <- scran::computeSumFactors(sce_object, cluster=clusters, min.mean=0.1)  # min.mean=0.1 ?
+  
+  ## Apply convolution size factors computed
+  sce_object <- logNormCounts(sce_object)
+  
+  return(sce_object)
+}
+
+######################################################################################################
+##  CELL TYPE ANNOT                                                                   
+
+CellAnnot <- function(sce_object, CellType_References){
+  
+  print(paste0("Cell type annot for ", metadata(sce_object)$Name_str, ""))
+  for (iRef_name in names(CellType_References)){
+    print(paste0("Classifying cells using ",iRef_name," reference", ""))
+    iRef_trained <- CellType_References[[iRef_name]]
+    iPreds <- classifySingleR(test=sce_object, trained=iRef_trained)
+    sce_object[[iRef_name]] <- iPreds$labels
+  }
+  
+  return(sce_object)
+}
+
+######################################################################################################
+##  CLUSTERING                                                                   
+
+ClusterKNN <- function(sce_object, K=20){
+  g <- buildSNNGraph(sce_object, k=K,  assay.type = "logcounts")
+  clust <- igraph::cluster_walktrap(g)$membership
+  sce_object[[paste0("Clust_Knn",K)]] <- clust
+  return(sce_object)
+}
+
+
+RunDimRed <- function(sce_x, use_assay="logcounts",
+                      subset_genes=NULL, suffix=NULL){
+  
+  if (!(is.null(subset_genes))){
+    sce_x <- scater::runPCA(sce_x, name=paste0("PCA",suffix), exprs_values=use_assay,subset_row=subset_genes)
+    sce_x <- scater::runTSNE(sce_x, name=paste0("TSNE",suffix), exprs_values=use_assay,subset_row=subset_genes)
+    sce_x <- scater::runUMAP(sce_x, name=paste0("UMAP",suffix), exprs_values=use_assay,subset_row=subset_genes)
+  } else if (!(is.null(suffix))){
+    sce_x <- scater::runPCA(sce_x, name=paste0("PCA",suffix), exprs_values=use_assay)
+    sce_x <- scater::runTSNE(sce_x, name=paste0("TSNE",suffix), exprs_values=use_assay)
+    sce_x <- scater::runUMAP(sce_x, name=paste0("UMAP",suffix), exprs_values=use_assay)
+  } else {
+    sce_x <- scater::runPCA(sce_x, name="PCA", exprs_values=use_assay)
+    sce_x <- scater::runTSNE(sce_x, name="TSNE", exprs_values=use_assay)
+    sce_x <- scater::runUMAP(sce_x, name="UMAP", exprs_values=use_assay)
+  }
+  return(sce_x)
+}
+
+######################################################################################################
+##  PSEUDOBULK ANALYSIS                                                                   
+
+
+### --- PSEUDOBULK HELPER FUNCTIONS
+
+GetDGE_rowDat <- function(sce_object){
+  if (ncol(rowData(sce_object)) == 0){
+    print("No rowData() found in sce object")
+    print('Retrieving annotations...')
+    
+    ensdb <- AnnotationHub()[["AH73881"]] #GRCh38.84, ensembl97 hsa -->> I SHOULD GET ENSEMBL 84 -- https://support.10xgenomics.com/single-cell-gene-expression/software/release-notes/build
+    rowData(sce_object)$SYMBOL <- rownames(sce_object)
+    rowData(sce_object)$ENSEMBL <- mapIds(ensdb, 
+                                          keys=rownames(sce_object),
+                                          keytype="SYMBOL", column="GENEID")
+    
+    print("Retrieving ENTREZID annotations")
+    ## Get ENTREZ Annotations
+    rowData(sce_object)$ENTREZID <- mapIds(ensdb,
+                                           keys=rownames(sce_object),
+                                           keytype="SYMBOL", column="ENTREZID") 
+    
+    # Remove duplicate symbols
+    sce_object <-  sce_object[!(duplicated(rownames(sce_object))),]
+  } else {
+    ## Get ENTREZ Annotations
+    ensdb <- AnnotationHub()[["AH73881"]] #GRCh38, ensembl97 hsa 
+    rowData(sce_object)$ENTREZID <- mapIds(ensdb,
+                                           keys=rownames(sce_object),
+                                           keytype="SYMBOL", column="ENTREZID") 
+    # Remove duplicate symbols
+    sce_object <-  sce_object[!(duplicated(rowData(sce_object)$Symbol)),]
+  }
+  
+  return(sce_object)
+}
+
+buildDesign <- function(dge_x,factor_str_vec){
+  
+  if (!(all(factor_str_vec %in% colnames(dge_x$samples)))){
+    message("WARNING: Factor strings should be in dge$samples")
+    return(NULL)
+  } else {
+    factor_x <- factor(dge_x$samples[[factor_str_vec[1]]])
+  }
+  
+  if (length(factor_str_vec)==1){
+    return(model.matrix( ~0 + factor_x))
+  } else if (length(factor_str_vec)==2){
+    factor_y <- factor(dge_x$samples[[factor_str_vec[2]]])
+    return(model.matrix( ~0 + factor_x + factor_y))
+  } else if (length(factor_str_vec)==3){
+    factor_y <- factor(dge_x$samples[[factor_str_vec[2]]])
+    factor_z <- factor(dge_x$samples[[factor_str_vec[3]]])
+    return(model.matrix( ~0 + factor_x + factor_y + factor_z))
+  } else {
+    message("Please manually build design matric with 'model.matrix()'")
+    return(NULL)
+  }
+}
+
+filterByDesign <- function(dge_x, factor_str_vec=NULL,use_design=NULL){
+  ### Assumes additive model
+  ### factor_str_vec: Should be a vector of strings, 
+  ###       indicating the columns of dge$samples to use in builing design matrix
+  ### use_design: Should be a design matrix
+  
+  if (!(is.null(use_design))){
+    message("Filtering with 'filterByExpr' using design matrix provided")
+    return(dge_x[filterByExpr(dge_x, design=use_design), keep.lib.sizes=FALSE])
+  } 
+  
+  if (!(all(factor_str_vec %in% colnames(dge_x$samples)))){
+    message("WARNING: Factor strings should be in dge$samples")
+    return(NULL)
+  } else if (is.null(factor_str_vec)){
+    message("WARNING: Please provide either 'use_design' or 'factor_str_vec'")
+    return(NULL)
+  }
+
+  if (length(factor_str_vec)==1){
+    message("Filtering with 'filterByExpr' using group")
+    return(dge_x[filterByExpr(dge_x, group=factor_x), keep.lib.sizes=FALSE])
+  } else {
+    design_mat <- buildDesign(dge_x, factor_str_vec)
+    if (!(is.null(design_mat))){
+      message("Filtering with 'filterByExpr' using design matrix")
+      message("Returning with design matrix")
+      dge_x$design <- design_mat
+      return(dge_x[filterByExpr(dge_x, design=design_mat), keep.lib.sizes=FALSE])
+    } else {
+      return(NULL)
+    }
+  }
+}
+
+filterByThreshold <- function(dge_x, cpm_threshold=0.5, sample_threshold=0.1, plot=FALSE){
+  ## Remove genes that are lowly expressed across the 10 main cell types
+  message("Filtering by threshold")
+  keep = rowMeans(edgeR::cpm(y=dge_x, log = TRUE) >= cpm_threshold) >= sample_threshold 
+  if (plot){
+    hist(edgeR::cpm(dge_x[keep, ], log = TRUE))
+  }
+  
+  message("Keeping genes:")
+  print(table(keep))
+  dge_x <- dge_x[keep, ]
+  return(dge_x)
+}
+
+normDGE <- function(dge_x, prior_n=1, RPKM=FALSE, log_RPKM=FALSE,
+                    GENE_LENGTHS_PATH='/stornext/Home/data/allstaff/w/whitfield.h/data/_genomes/gene_lengths_HTSeq_gencodev38.Rdata'){
+  ## logCPM
+  dge_x <- calcNormFactors(dge_x)  # normalise by library size
+  dge_x$logCPM <- edgeR::cpm(dge_x, log=TRUE, prior.count = prior_n, 
+                                      normalized.lib.sizes=TRUE, lib.size=dge_x$samples$lib.size) 
+  
+  if (RPKM == TRUE){
+    # Get gene lengths
+    load(GENE_LENGTHS_PATH)
+    idx <- match(rownames(dge_x), gene_lengths$gene_name)
+    dge_x <- dge_x[which(!is.na(idx)),]
+    idx <- idx[!is.na(idx)] 
+    dge_x$genes$lengths <- gene_lengths[idx,]$gene_length 
+    
+    if (log_RPKM){
+      dge_x$logRPKM <- rpkm(dge_x, log=log_RPKM, prior.count = prior_n, 
+                            gene.length=dge_x$genes$lengths, normalized.lib.sizes=TRUE)
+    } else {
+      dge_x$RPKM <- rpkm(dge_x, log=log_RPKM, prior.count = prior_n, 
+                            gene.length=dge_x$genes$lengths, normalized.lib.sizes=TRUE) 
+    }
+
+    
+  }
+  return(dge_x)
+}
+
+correctBatch <- function(dge_x, preserve_vec, batch_str, prior_n=2){
+  
+  if (!(all(c(preserve_vec,batch_str) %in% colnames(dge_x$samples)))){
+    message("WARNING: Factor strings should be in dge$samples")
+    return(NULL)
+  }
+  if (!("norm.factors" %in% colnames(dge_x$samples))){
+    message("Calculating norm.factors")
+    dge_x <- calcNormFactors(dge_x)
+  }
+  ## Correct batched
+  dge_x$batch_corrected <- removeBatchEffect(cpm(dge_x, log=TRUE, prior.count = prior_n), 
+                                             design = buildDesign(dge_x,preserve_vec),  
+                                             batch=factor(dge_x$samples[[batch_str]]))
+  return(dge_x)
+}
+  
+
+### --- SELECTING PSEUDOBULK CLUSTER SIZE FUNCTIONS
+## Uses Kmeans clustering to split large groups into smaller groups
+
+splitBigClusts <- function(sce_x, pb_cluster_str, size_thresh,
+                           subset_label_str=NULL, clust_to_label_dict=NULL,
+                           optimal_clust_size=500, min_clust_size=200){
+  ## subset_label_vec: This is in case you want to subcluster within a patient etc.
+  ## clust_to_label_dict: Relates pseudobulk cluster to label
+  ##                i.e. setNames(MegaBCB_Immune$PatientID,MegaBCB_Immune$ImmunePB)
+  
+  ## Check if clusters are too large
+  big_clusters <- names(table(sce_x[[pb_cluster_str]])[table(sce_x[[pb_cluster_str]])>size_thresh])
+  
+  if (length(big_clusters)==0){
+    message("Clusters are all smaller than 'size_thresh'")
+    return(NULL)
+  }
+  
+  ## Split large clusters
+  new_clusts <- c()
+  for (i_clust in big_clusters){
+    if (!(is.null(subset_label_str))){
+      i_sce <- sce_x[,sce_x[[subset_label_str]] == as.vector(clust_to_label_dict[i_clust])]
+    } else {
+      i_sce <- sce_x
+    }
+    cluster_vec <- splitPB(i_sce,
+                           i_sce[[pb_cluster_str]],
+                           i_clust,
+                           optimal_size=optimal_clust_size,
+                           min_size=min_clust_size)
+    new_clusts <- c(new_clusts, cluster_vec)
+  }
+  
+  ## Fix cluster IDs
+  sce_x <- fixClusterIDs(sce_x, pb_cluster_str,new_clusts)
+  
+  return(sce_x)
+}
+
+fixClusterIDs <- function(sce_x, pb_cluster_str,new_clusts){
+  extra_cellIDs <- setNames(sce_x[[pb_cluster_str]],colnames(sce_x))
+  extra_cellIDs <- extra_cellIDs[!(names(extra_cellIDs) %in% names(new_clusts))]
+  new_clusts <- c(new_clusts,extra_cellIDs)
+  sce_x[[pb_cluster_str]] <- as.vector(new_clusts[colnames(sce_x)])
+  return(sce_x)
+}
+
+mergeClust <- function(clust_x, dist_mat_x, clust_vec_x){
+  ## Helper function for splitPB()
+  dist_mat_x <- as.matrix(dist_mat_x)
+  dist_vec <- as.vector(dist_mat[as.integer(clust_x),])
+  dist_vec[dist_vec == 0] <- Inf
+  merge_with <- which.min(dist_vec)
+  clust_vec_x <- replace(clust_vec_x, clust_vec_x==clust_x, merge_with)
+  return(clust_vec_x)
+}
+
+splitPB <- function(sce_x, clust_vec, clust_to_split, 
+                    optimal_size=500,min_size=200){
+  
+  ## sce_x: Already should be subset to patient etc.
+  ##        i.e. MegaBCB_Immune[,(MegaBCB_Immune$PatientID == patient)]
+  ## clust_vec: Vector of current clusters i.e. MegaBCB_Immune$PB_clust
+  ## clust_to_split: Cluster string or number that needs to be split
+  
+  numbCells <- sum(clust_vec == clust_to_split)
+  numbClust <- ceiling(numbCells/optimal_size)
+  
+  dat_x <- logcounts(sce_x[,clust_vec == clust_to_split])
+  dat_x <- dat_x[rowSums(dat_x>0)>10,]
+  k_x <- kmeans(t(dat_x), numbClust)
+  cluster_vec <-  as.vector(k_x$cluster[colnames(dat_x)])
+  
+  ## Merge nearby clusters
+  smol <- names(table(k_x$cluster)[table(k_x$cluster)<min_size])
+  if (length(smol)>0){
+    dist_mat <- as.matrix(dist(k_x$centers))
+    if (length(smol)==1){
+      cluster_vec <- mergeClust(smol, dist_mat, cluster_vec)
+    } else {
+      for (i_smol in smol){
+        cluster_vec <- mergeClust(i_smol, dist_mat, cluster_vec)
+      }
+    }}
+  
+  clusters <- paste0(clust_to_split,"_", cluster_vec)
+  names(clusters) <- colnames(dat_x)
+  return(clusters)
+}
+
+
+
+
+### --- PSEUDOBULK FUNCTIONS
+
+
+QuickPseudoBulk <- function(sce_object, cluster_labels, rowDat=FALSE){
+  
+  Summed_Sce <- aggregateAcrossCells(sce_object, id=cluster_labels)
+  
+  if (rowDat){
+    DGE_Summed_sce <- DGEList(counts(Summed_Sce),remove.zeros=TRUE,
+                              genes = rowData(sce_object))
+  } else {
+    DGE_Summed_sce <- DGEList(counts(Summed_Sce),remove.zeros=TRUE)
+  }
+
+  ## Discard labels with very small library sizes
+  discarded <- isOutlier(DGE_Summed_sce$samples$lib.size, log=TRUE,
+                         type="lower")
+  print("Samples to discard:")
+  print(table(discarded))
+  DGE_Summed_sce <- DGE_Summed_sce[,!discarded]
+  return(DGE_Summed_sce)
+}
+
+GetPseudoBulk_DGE <- function(sce_object, cluster_labels, cpm_threshold=0.5, sample_threshold=0.1, 
+                              OUTPUT_FIGURE_DIR=NA, logRPKM=FALSE,
+                              GENE_LENGTHS_PATH='/stornext/Home/data/allstaff/w/whitfield.h/data/_genomes/gene_lengths_HTSeq_gencodev38.Rdata'){
+  
+  ## Get row data
+  sce_object <- GetDGE_rowDat(sce_object)
+  
+  ## Pseudobulk
+  DGE_Summed_sce <- QuickPseudoBulk(sce_object, cluster_labels,rowDat=TRUE)
+  
+  ## Gene filtering
+  DGE_Summed_sce <- filterByThreshold(DGE_Summed_sce)
+  
+  ## Normalise
+  DGE_Summed_sce <- normDGE(DGE_Summed_sce, prior_n=1, RPKM=logRPKM, log_RPKM=TRUE)
+  
+  return(DGE_Summed_sce)
+  
+}
+
+

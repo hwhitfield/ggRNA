@@ -1,0 +1,991 @@
+
+### Load using source("C:\Users\whitfield.h\Desktop\Projects\B_I_G_Data\DataProcessing_Scripts\PipelineFunctions.R")
+
+library("edgeR")
+library("biomaRt") 
+library("RColorBrewer")
+suppressMessages(library("RUVSeq"))
+suppressMessages(library(gridExtra))
+library("gplots")
+library(org.Hs.eg.db)
+library(FactoMineR)
+library(factoextra)
+
+
+# ALSO DO LIMMA AND MAYBE COMPARE?? IN AN RMARKDOWN?
+
+
+######################################################################################################
+#  M E T A                                                                   
+######################################################################################################
+
+METAPIPE <- function(DATA, GROUPS.vector, DESIGN.modelmatrix){
+  DGE_Object <- EdgeRProcessing(DATA, GROUPS.vector, DESIGN.modelmatrix)
+  #DGE_Object <- GetGeneAnnotations(DGE_Object)
+  PlotMDS(DGE_Object, "MDS")
+  PlotRLE(DGE_Object, "bottomright", "RLE")
+  PlotPCA(DGE_Object, "bottomright", "PCA")
+  BCV(DGE_Object, DESIGN.modelmatrix)
+  PCA_GO_Enrich(DGE_Object)
+}
+
+METAPIPE.SVA <- function(DATA, GROUPS.vector, DESIGN.modelmatrix, SV.numb){
+  DGE_Object <- EdgeRProcessing(DATA, GROUPS.vector, DESIGN.modelmatrix)
+  DGE_Object <- GetGeneAnnotations(DGE_Object)
+  PlotMDS(DGE_Object, "MDS")
+  PlotRLE(DGE_Object, "bottomright", "RLE")
+  PlotPCA(DGE_Object, "bottomright", "PCA")
+  
+  SV <- SVA(DGE_Object, design)
+  DATA <- SVA_GetCorrectedData(DGE_Object, SV, SV.numb)
+  DESIGN.modelmatrix <- SVA_GetNewDESIGN(DESIGN.modelmatrix, SV, SV.numb)
+  
+  DGE_Object <- EdgeRProcessing(DATA, GROUPS.vector, DESIGN.modelmatrix)
+  DGE_Object <- GetGeneAnnotations(DGE_Object)
+  PlotMDS(DGE_Object, "MDS - SVA Corrected")
+  PlotRLE(DGE_Object, "bottomright", "RLE - SVA Corrected")
+  PlotPCA(DGE_Object, "bottomright", "PCA - SVA Corrected")
+  BCV(DGE_Object, DESIGN.modelmatrix)
+  PCA_GO_Enrich(DGE_Object)
+}
+
+DE_LOOP.COEF <- function(DGE_Object, DESIGN.modelmatrix, COEF.list){
+  for (COEF in COEF.list){
+    DE.COEF(DGE_Object, DESIGN.modelmatrix, COEF)
+  }
+}
+
+DE_LOOP.CONTRAST <- function(DGE_Object, DESIGN.modelmatrix, CONTRAST.list){
+  for (CONTRAST in CONTRAST.list){
+    DE.COEF(DGE_Object, DESIGN.modelmatrix, COEF)
+  }
+}
+
+######################################################################################################
+#  P R E -  P R O C E S S I N G  F U N C T I O N S                                                                     
+######################################################################################################
+
+
+
+LoadSTAROutput <- function(DATAFolder, FILENAME_str, numbSAMPLES, lenFILEPATH, GROUPS.vector=NA){
+  
+  n <- 6 + numbSAMPLES - 1
+  FileLength <- lenFILEPATH + 1  # usually 7 to 10
+  
+  DATA <- read.table(paste(DATAFolder,FILENAME_str, sep=""), sep="\t", header=TRUE, skip = 1, row.names = 1)
+  GeneLengths <- DATA$Length
+  DATA <- DATA[,6:n]
+  
+  # fix column names
+  x <- strsplit(colnames(DATA), "[.]")
+  new_cols = list()
+  for(i in 1:length(x)){
+    getStringNo2 <- length(x[[i]])-3  # minus 3 for fastqAligned.out.bam to get run number
+    getStringNo1 <- FileLength  # minus info about file location
+    new_cols[i] <- paste(x[[i]][getStringNo1:getStringNo2], collapse="_")
+  }
+  
+  new_cols <- unlist(new_cols)
+  colnames(DATA) <- new_cols
+  
+  
+  ### make DGE object
+  if (!is.na(GROUPS.vector)){
+    DGE_Object <- DGEList(DATA, group=GROUPS.vector)
+  } else{
+    
+    DGE_Object <- DGEList(DATA)
+  }
+
+  DGE_Object <- GetGeneAnnotations(DGE_Object, GeneLengths)
+  
+  return(DGE_Object)
+}
+
+LoadSUBREADOutput <- function(DATAFolder, FILENAME_str, numbSAMPLES, lenFILEPATH, GROUPS.vector=NA){
+  
+  n <- 6 + numbSAMPLES - 1
+  FileLength <- lenFILEPATH + 1  # usually 7 to 10
+  
+  DATA <- read.table(paste(DATAFolder,FILENAME_str, sep=""), sep="\t", header=TRUE, skip = 1, row.names = 1)
+  GeneLengths <- DATA$Length
+  DATA <- DATA[,6:n]
+  
+  # fix column names
+  x <- strsplit(colnames(DATA), "[.]")
+  new_cols = list()
+  for(i in 1:length(x)){
+    getStringNo2 <- length(x[[i]])-1  # minus 3 for fastqAligned.out.bam to get run number
+    getStringNo1 <- FileLength  # minus info about file location
+    new_cols[i] <- paste(x[[i]][getStringNo1:getStringNo2], collapse="_")
+  }
+  
+  new_cols <- unlist(new_cols)
+  colnames(DATA) <- new_cols
+  
+  
+  ### make DGE object
+  if (!is.na(GROUPS.vector)){
+    DGE_Object <- DGEList(DATA, group=GROUPS.vector)
+  } else{
+    
+    DGE_Object <- DGEList(DATA)
+  }
+  
+  DGE_Object <- GetGeneAnnotations(DGE_Object, GeneLengths)
+  
+  return(DGE_Object)
+}
+
+
+LoadSubread_DF <- function(DATAFolder, FILENAME_str, numbSAMPLES, lenFILEPATH){
+  
+  n <- 6 + numbSAMPLES - 1
+  FileLength <- lenFILEPATH + 1  # usually 7 to 10
+  
+  DATA <- read.table(paste(DATAFolder,FILENAME_str, sep=""), sep="\t", header=TRUE, skip = 1, row.names = 1)
+  GeneLengths <- DATA$Length
+  DATA <- DATA[,6:n]
+  
+  # fix column names
+  x <- strsplit(colnames(DATA), "[.]")
+  new_cols = list()
+  for(i in 1:length(x)){
+    getStringNo2 <- length(x[[i]])-1  # minus 3 for fastqAligned.out.bam to get run number
+    getStringNo1 <- FileLength  # minus info about file location
+    new_cols[i] <- paste(x[[i]][getStringNo1:getStringNo2], collapse="_")
+  }
+  
+  new_cols <- unlist(new_cols)
+  colnames(DATA) <- new_cols
+  DATA$GeneLengths <- GeneLengths
+  
+  return(DATA)
+}
+
+LoadSTAR_DF <- function(DATAFolder, FILENAME_str, numbSAMPLES, lenFILEPATH){
+  
+  n <- 6 + numbSAMPLES - 1
+  FileLength <- lenFILEPATH + 1  # usually 7 to 10
+  
+  DATA <- read.table(paste(DATAFolder,FILENAME_str, sep=""), sep="\t", header=TRUE, skip = 1, row.names = 1)
+  GeneLengths <- DATA$Length
+  DATA <- DATA[,6:n]
+  
+  # fix column names
+  x <- strsplit(colnames(DATA), "[.]")
+  new_cols = list()
+  for(i in 1:length(x)){
+    getStringNo2 <- length(x[[i]])-3  # minus 3 for fastqAligned.out.bam to get run number
+    getStringNo1 <- FileLength  # minus info about file location
+    new_cols[i] <- paste(x[[i]][getStringNo1:getStringNo2], collapse="_")
+  }
+  
+  new_cols <- unlist(new_cols)
+  colnames(DATA) <- new_cols
+  DATA$GeneLengths <- GeneLengths
+  
+  return(DATA)
+}
+
+######################################################################################################
+#  E D G E R  F U N C T I O N S                                                                     
+######################################################################################################
+
+### Background reading
+# https://support.bioconductor.org/p/79149/
+
+
+EdgeRProcessing <- function(DATA, GROUPS.vector, DESIGN.modelmatrix, GeneLengths, REMOVE.MT = FALSE, FILTER_thresh = NA, CPM_thresh=0.5) {
+  
+  ### --- Make DGE Object
+  if (is.na(GROUPS.vector)){
+    DGE_Object <- DGEList(DATA) 
+  } else {
+    DGE_Object <- DGEList(DATA, group=GROUPS.vector) 
+  }
+  
+  ### --- Gene Annotations
+
+  DGE_Object <- GetGeneAnnotations(DGE_Object, GeneLengths)
+
+  
+  ### --- Gene Filtering
+  
+  if (REMOVE.MT){
+    ### Remove MT genes ?
+    DGE_Object <- DGE_Object[!(grepl("^MT-", DGE_Object$genes$hgnc_symbol)), ]
+  }
+  
+  if (is.na(FILTER_thresh)){
+    # Filter by expression
+    DGE_Object <- DGE_Object[filterByExpr(DGE_Object, design=DESIGN.modelmatrix), keep.lib.sizes=FALSE] 
+  } else {
+    # Filter by own thresholds
+    keep <- rowSums(cpm(DGE_Object) > CPM_thresh) >= FILTER_thresh
+    DGE_Object <- DGE_Object[keep, , keep.lib.sizes=FALSE]
+  }
+  
+  ### --- Calculate Factors & Dispersions
+  DGE_Object <- calcNormFactors(DGE_Object)  # normalise by library size
+  DGE_Object <- estimateDisp(DGE_Object, DESIGN.modelmatrix, robust = TRUE)
+  
+  return(DGE_Object)   
+}
+
+
+
+GetGeneAnnotations <- function(DGE_Object, GeneLengths){
+  ensembl <- useEnsembl(biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl", host="oct2018.archive.ensembl.org")
+  annot <- biomaRt::getBM(attributes=c('ensembl_gene_id','version', 'external_gene_name',  'gene_biotype','entrezgene', 'hgnc_symbol'), mart = ensembl)
+  
+  idx <- match(rownames(DGE_Object), annot$ensembl_gene_id)
+  DGE_Object <- DGE_Object[which(!is.na(idx)),]
+  GeneLengths <- GeneLengths[which(!is.na(idx))]
+  idx <- idx[!is.na(idx)] 
+  DGE_Object$genes <- annot[idx,] 
+  
+  rownames(DGE_Object$genes) <- DGE_Object$genes$ensembl_gene_id
+  
+  ### Include gene lengths
+  DGE_Object$genes$Length <- GeneLengths
+  return(DGE_Object)
+}
+
+BCV <- function(DGE_Object, DESIGN.modelmatrix){
+  #print("Ensure you have estimated dispersions on these data")
+  plotBCV(DGE_Object)
+  bcv_idx <- sqrt(DGE_Object$tagwise.dispersion) > 0.75 & DGE_Object$AveLogCPM> 4 
+  bcv_idx2 <- sqrt(DGE_Object$tagwise.dispersion) > 0.6 & DGE_Object$AveLogCPM > 3 
+  points(DGE_Object$AveLogCPM[bcv_idx2], sqrt(DGE_Object$tagwise.dispersion)[bcv_idx2], col="pink", cex = 1.3)
+  points(DGE_Object$AveLogCPM[bcv_idx], sqrt(DGE_Object$tagwise.dispersion)[bcv_idx], col="red", cex = 1.3) 
+  
+  summary(DGE_Object$tagwise.dispersion)
+  summary(DGE_Object$prior.df)
+  sqrt(DGE_Object$common.dispersion)
+}
+
+ProcessData <- function(DATA, cpmThreshold, sampleThreshold, ENTREZID=TRUE, PLOT=TRUE, Data_str="", FIGUREFolder="W:\\HeiserTrain\\figure\\Holly_NewPDX\\"){
+  
+  ### --- Get gene lengths from column
+  GeneLengths <- DATA$GeneLengths
+  DATA <-  DATA[, !(colnames(DATA) %in% c("GeneLengths"))]
+  
+  ##------ MAKE DGELIST OBJECT
+  
+  ## DGEList object with biomaRt gene annotations 
+  ## And tidied column names
+  DGE_Object <- DGEList(DATA)
+  
+  DGE_Object <- GetGeneAnnotations(DGE_Object, GeneLengths)
+  
+  
+  ##------ CONVERT TO ENTREZ
+  
+  ## 58735 to 26703 genes just by converting to ENTREZ
+   
+  if (ENTREZID == TRUE){
+    rn <- DGE_Object$genes$entrezgene[match(rownames(DGE_Object),DGE_Object$genes$ensembl_gene_id)]
+    DGE_Object$counts <- DGE_Object$counts[which(!is.na(rn)),]
+    rn <- rn[!is.na(rn)] 
+    DGE_Object$genes <- DGE_Object$genes[DGE_Object$genes$entrezgene %in% rn,]
+    rownames(DGE_Object$counts) <- rn
+  } else{
+    
+    rn <- DGE_Object$genes$external_gene_name[match(rownames(DGE_Object),DGE_Object$genes$ensembl_gene_id)]
+    DGE_Object$counts <- DGE_Object$counts[which(!is.na(rn)),]
+    rn <- rn[!is.na(rn)] 
+    DGE_Object$genes <- DGE_Object$genes[DGE_Object$genes$external_gene_name %in% rn,]
+    rownames(DGE_Object$counts) <- rn
+  }
+
+  
+  if (PLOT==TRUE){
+    
+    
+    png(paste(FIGUREFolder,"QC/librarySize_ENTREZ_", Data_str,".png", sep=""), height = 7, width = 8, unit = "in", res= 300)
+    par(mar = c(16, 3,1,1))
+    # barplot(colSums(DGE$counts)/1e6, las = 2, cex.lab = 0.8)
+    barplot(DGE_Object$samples$lib.size, names = rownames(DGE_Object$samples), las = 2, cex.lab = 0.6)
+    dev.off()
+    
+  }
+  
+  
+  ##------ Filtering genes same as sepideh
+  
+  ## Genes need CPM above 2 in at least 1 of 6 samples
+  ## Sepideh used  CPM above 3 "in at least 4" samples but had 28
+  
+  keep <- rowSums( edgeR::cpm(DGE_Object) > cpmThreshold) >= sampleThreshold
+  
+  print(summary(keep))
+  #    Mode   FALSE    TRUE 
+  # logical   10814   15889 
+  
+  DGE_Object <- DGE_Object[keep, ]
+  
+  ##---- Normalise
+  
+  DGE_Object <- calcNormFactors(DGE_Object)
+  
+  ##---- logRPKM
+  
+  logRPKM_DATA <- edgeR::rpkm(DGE_Object, gene.length = DGE_Object$genes$Length, log = TRUE, prior.count = 2)
+  
+  
+  if (PLOT==TRUE){
+    
+    
+    rle <- logRPKM_DATA - rowMedians(logRPKM_DATA)
+    
+    pdf(paste(FIGUREFolder,"QC/RLE_", Data_str,".pdf", sep=""), height = 7, width = 8)
+    par(mfrow = c(1, 1))
+    par(mar = c(18, 6, 4, 2))
+    boxplot(
+      rle ,
+      main = "RLE",
+      las = 2,
+      cex.main = 1.5,
+      cex.axis = 1,
+      # yaxt = 'n',
+      ylab = "RLE",
+      cex.lab = 1.5,
+      frame = FALSE ,
+      # whisklty = 0,
+      # staplelty = 0,
+      outline = FALSE,
+      mgp = c(5, 1, 0), 
+      names = rownames(DGE_Object$samples)
+    )
+    abline(h = 0, col = "blue", lwd = 2)
+    dev.off()
+    
+    
+    ##------------------ MDS plot:
+    
+    
+    png(paste(FIGUREFolder,"QC/MDSplot_", Data_str,".png", sep=""), 
+        height = 10, width = 10, units = "in", res = 300)
+    
+    plotMDS(logRPKM_DATA,
+            labels = colnames(DGE_Object),
+            cex = 0.7,
+            main = paste0("MDS for filtered logRPKM ", Data_str,""))
+    dev.off()
+    
+  }
+  
+  return(logRPKM_DATA)
+  
+}
+
+ProcessData_cpm <- function(DATA, cpmThreshold, sampleThreshold, ENTREZID=TRUE, PLOT=TRUE, Data_str="", FIGUREFolder="W:\\HeiserTrain\\figure\\Holly_NewPDX\\"){
+  
+  ### --- Get gene lengths from column
+  GeneLengths <- DATA$GeneLengths
+  DATA <-  DATA[, !(colnames(DATA) %in% c("GeneLengths"))]
+  
+  ##------ MAKE DGELIST OBJECT
+  
+  ## DGEList object with biomaRt gene annotations 
+  ## And tidied column names
+  DGE_Object <- DGEList(DATA)
+  
+  DGE_Object <- GetGeneAnnotations(DGE_Object, GeneLengths)
+  
+  
+  ##------ CONVERT TO ENTREZ
+  
+  ## 58735 to 26703 genes just by converting to ENTREZ
+  
+  if (ENTREZID == TRUE){
+    rn <- DGE_Object$genes$entrezgene[match(rownames(DGE_Object),DGE_Object$genes$ensembl_gene_id)]
+    DGE_Object$counts <- DGE_Object$counts[which(!is.na(rn)),]
+    rn <- rn[!is.na(rn)] 
+    DGE_Object$genes <- DGE_Object$genes[DGE_Object$genes$entrezgene %in% rn,]
+    rownames(DGE_Object$counts) <- rn
+  } else{
+    
+    rn <- DGE_Object$genes$external_gene_name[match(rownames(DGE_Object),DGE_Object$genes$ensembl_gene_id)]
+    DGE_Object$counts <- DGE_Object$counts[which(!is.na(rn)),]
+    rn <- rn[!is.na(rn)] 
+    DGE_Object$genes <- DGE_Object$genes[DGE_Object$genes$external_gene_name %in% rn,]
+    rownames(DGE_Object$counts) <- rn
+  }
+  
+  
+  if (PLOT==TRUE){
+    
+    
+    png(paste(FIGUREFolder,"QC/librarySize_ENTREZ_", Data_str,".png", sep=""), height = 7, width = 8, unit = "in", res= 300)
+    par(mar = c(16, 3,1,1))
+    # barplot(colSums(DGE$counts)/1e6, las = 2, cex.lab = 0.8)
+    barplot(DGE_Object$samples$lib.size, names = rownames(DGE_Object$samples), las = 2, cex.lab = 0.6)
+    dev.off()
+    
+  }
+  
+  
+  ##------ Filtering genes same as sepideh
+  
+  ## Genes need CPM above 2 in at least 1 of 6 samples
+  ## Sepideh used  CPM above 3 "in at least 4" samples but had 28
+  
+  keep <- rowSums( edgeR::cpm(DGE_Object) > cpmThreshold) >= sampleThreshold
+  
+  print(summary(keep))
+  #    Mode   FALSE    TRUE 
+  # logical   10814   15889 
+  
+  DGE_Object <- DGE_Object[keep, ]
+  
+  ##---- Normalise
+  
+  DGE_Object <- calcNormFactors(DGE_Object)
+  
+  ##---- logCPM
+  
+  logCPM_DATA <- edgeR::cpm(DGE_Object, gene.length = DGE_Object$genes$Length, log = TRUE, prior.count = 2)
+  
+  
+  if (PLOT==TRUE){
+    
+    
+    rle <- logCPM_DATA - rowMedians(logCPM_DATA)
+    
+    pdf(paste(FIGUREFolder,"QC/RLE_", Data_str,".pdf", sep=""), height = 7, width = 8)
+    par(mfrow = c(1, 1))
+    par(mar = c(18, 6, 4, 2))
+    boxplot(
+      rle ,
+      main = "RLE",
+      las = 2,
+      cex.main = 1.5,
+      cex.axis = 1,
+      # yaxt = 'n',
+      ylab = "RLE",
+      cex.lab = 1.5,
+      frame = FALSE ,
+      # whisklty = 0,
+      # staplelty = 0,
+      outline = FALSE,
+      mgp = c(5, 1, 0), 
+      names = rownames(DGE_Object$samples)
+    )
+    abline(h = 0, col = "blue", lwd = 2)
+    dev.off()
+    
+    
+    ##------------------ MDS plot:
+    
+    
+    png(paste(FIGUREFolder,"QC/MDSplot_", Data_str,".png", sep=""), 
+        height = 10, width = 10, units = "in", res = 300)
+    
+    plotMDS(logCPM_DATA,
+            labels = colnames(DGE_Object),
+            cex = 0.7,
+            main = paste0("MDS for filtered logRPKM ", Data_str,""))
+    dev.off()
+    
+  }
+  
+  return(logCPM_DATA)
+  
+}
+
+ProcessData_ALL <- function(DATA, SampleName_dict, cpmThreshold, sampleThreshold, PLOT=TRUE, Data_str="", FIGUREFolder="W:\\HeiserTrain\\figure\\Holly_NewPDX\\"){
+  
+  ### --- Get gene lengths from column
+  GeneLengths <- DATA$GeneLengths
+  DATA <-  DATA[, !(colnames(DATA) %in% c("GeneLengths"))]
+  
+  ##------ MAKE DGELIST OBJECT
+  
+  ## DGEList object with biomaRt gene annotations 
+  ## And tidied column names
+  DGE_Object <- DGEList(DATA)
+  
+  DGE_Object <- GetGeneAnnotations(DGE_Object, GeneLengths)
+  
+  
+  ##------ CONVERT TO ENTREZ
+  
+  ## 58735 to 26703 genes just by converting to ENTREZ
+  
+  rn <- DGE_Object$genes$entrezgene[match(rownames(DGE_Object),DGE_Object$genes$ensembl_gene_id)]
+  DGE_Object$counts <- DGE_Object$counts[which(!is.na(rn)),]
+  rn <- rn[!is.na(rn)] 
+  DGE_Object$genes <- DGE_Object$genes[DGE_Object$genes$entrezgene %in% rn,]
+  rownames(DGE_Object$counts) <- rn
+  
+  if (PLOT==TRUE){
+    
+    
+    png(paste(FIGUREFolder,"QC/librarySize_ENTREZ_", Data_str,".png", sep=""), height = 7, width = 8, unit = "in", res= 300)
+    par(mar = c(16, 3,1,1))
+    # barplot(colSums(DGE$counts)/1e6, las = 2, cex.lab = 0.8)
+    barplot(DGE_Object$samples$lib.size, names = rownames(DGE_Object$samples), las = 2, cex.lab = 0.6)
+    dev.off()
+    
+  }
+  
+  
+  
+  ## ------ Sum over technical replicates
+  print("Summing over technical replicaes")
+  DGE_Object <- sumTechReps(DGE_Object, as.vector(SampleName_dict[as.vector(colnames(DGE_Object))]))
+  
+  ##------ Filtering genes same as sepideh
+  
+  ## Genes need CPM above 2 in at least 1 of 6 samples
+  ## Sepideh used  CPM above 3 "in at least 4" samples but had 28
+  
+  keep <- rowSums( edgeR::cpm(DGE_Object) > cpmThreshold) >= sampleThreshold
+  
+  print(summary(keep))
+  #    Mode   FALSE    TRUE 
+  # logical   10814   15889 
+  
+  DGE_Object <- DGE_Object[keep, ]
+  
+  ##---- Normalise
+  
+  DGE_Object <- calcNormFactors(DGE_Object)
+  
+  ##---- logRPKM
+  
+  logRPKM_DATA <- edgeR::rpkm(DGE_Object, gene.length = DGE_Object$genes$Length, log = TRUE, prior.count = 2)
+  
+  
+  if (PLOT==TRUE){
+    
+    
+    rle <- logRPKM_DATA - rowMedians(logRPKM_DATA)
+    
+    pdf(paste(FIGUREFolder,"QC/RLE_", Data_str,".pdf", sep=""), height = 7, width = 8)
+    par(mfrow = c(1, 1))
+    par(mar = c(18, 6, 4, 2))
+    boxplot(
+      rle ,
+      main = "RLE",
+      las = 2,
+      cex.main = 1.5,
+      cex.axis = 1,
+      # yaxt = 'n',
+      ylab = "RLE",
+      cex.lab = 1.5,
+      frame = FALSE ,
+      # whisklty = 0,
+      # staplelty = 0,
+      outline = FALSE,
+      mgp = c(5, 1, 0), 
+      names = rownames(DGE_Object$samples)
+    )
+    abline(h = 0, col = "blue", lwd = 2)
+    dev.off()
+    
+    
+    ##------------------ MDS plot:
+    
+    
+    png(paste(FIGUREFolder,"QC/MDSplot_", Data_str,".png", sep=""), 
+        height = 10, width = 10, units = "in", res = 300)
+    
+    plotMDS(logRPKM_DATA,
+            labels = colnames(DGE_Object),
+            cex = 0.7,
+            main = paste0("MDS for filtered logRPKM ", Data_str,""))
+    dev.off()
+    
+  }
+  
+  return(logRPKM_DATA)
+  
+}
+
+
+DE.COEF <- function(DGE_Object, DESIGN.modelmatrix, COEF){
+  print("Ensure DGE object is on corrected data i.e. updated design matrix if SVA was performed")
+  
+  # Fit model
+  qfit <- glmQLFit(DGE_Object, DESIGN.modelmatrix)
+  
+  # Test DE 
+  DE_OBJECT <- glmQLFTest(qfit, coef=COEF)   
+  summary(decideTestsDGE(DE_OBJECT, adjust.method="BH"))
+  DE_OBJECT$table$AdjustedPValue <- p.adjust(DE_OBJECT$table$PValue, method="BH")
+  TOPTAGS <- rownames(topTags(DE_OBJECT, n=20, p.value=0.05, adjust.method = "BH", sort.by = "PValue"))
+  log_dge.full <- cpm(DGE_Object, prior.count =2, log =TRUE) # keeps only the top 15 genes 
+  topgenes_log_expression.full <- log_dge.full[TOPTAGS,]
+  rn <- DGE_Object$genes$hgnc_symbol[match(rownames(topgenes_log_expression.full), DGE_Object$genes$ensembl_gene_id)]
+  #colnames(topgenes_log_expression.full) <- c("S5 (13)", "S4 (2)", "S3 (13)", "S2 (2)", "S1 (13)", "S8 (2)", "S7 (13)")
+  heatmap(topgenes_log_expression.full, labRow = rn, main = "Heatmap of Top 20 Differentially Expressed Genes", cexCol=.7)
+  return(DE_OBJECT)
+}
+
+DE.CONTRAST <- function(DGE_Object, DESIGN.modelmatrix, CONTRAST){
+  print("Ensure DGE object is on corrected data i.e. updated design matrix if SVA was performed")
+  
+  # Fit model
+  qfit <- glmQLFit(DGE_Object, DESIGN.modelmatrix)
+  
+  # Test DE 
+  DE_OBJECT <- glmQLFTest(qfit, contrast=CONTRAST)   
+  summary(decideTestsDGE(DE_OBJECT, adjust.method="BH"))
+  DE_OBJECT$table$AdjustedPValue <- p.adjust(DE_OBJECT$table$PValue, method="BH")
+  TOPTAGS <- rownames(topTags(DE_OBJECT, n=20, p.value=0.05, adjust.method = "BH", sort.by = "PValue"))
+  log_dge.full <- cpm(DGE_Object, prior.count =2, log =TRUE) # keeps only the top 15 genes 
+  topgenes_log_expression.full <- log_dge.full[TOPTAGS,]
+  rn <- DGE_Object$genes$hgnc_symbol[match(rownames(topgenes_log_expression.full), DGE_Object$genes$ensembl_gene_id)]
+  #colnames(topgenes_log_expression.full) <- c("S5 (13)", "S4 (2)", "S3 (13)", "S2 (2)", "S1 (13)", "S8 (2)", "S7 (13)")
+  heatmap(topgenes_log_expression.full, labRow = rn, main = "Heatmap of Top 20 Differentially Expressed Genes", cexCol=.7)
+  return(DE_OBJECT)
+}
+
+
+DE.UpDownSplit <- function(DE_OBJECT){
+  top_tags <- topTags(DE_OBJECT, n=Inf, p.value=0.05, adjust.method = "BH", sort.by = "PValue")
+  UPregulated <- top_tags[top_tags$table$logFC > 0,]$table
+  DOWNregulated <- top_tags[top_tags$table$logFC < 0,]$table
+  
+  GOPlot(UPregulated$ensembl_gene_id)
+  GOPlot(DOWNregulated$ensembl_gene_id)
+  
+}
+
+
+######################################################################################################
+#  G O  F U N C T I O N S                                                                     
+######################################################################################################
+
+
+GOPlot <- function(GENELIST.Ensembl){
+  library(clusterProfiler)
+  GENECONVERSION <- clusterProfiler::bitr(GENELIST.Ensembl, fromType="ENSEMBL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+  GENELIST <- as.character((unique(GENECONVERSION$ENTREZID)))
+  
+  ego1 <- clusterProfiler::enrichGO(
+    
+    gene = GENELIST,      # a vector of entrez gene id.
+    keyType = "ENTREZID",
+    #universe = ALL_genes,
+    OrgDb = org.Hs.eg.db,      # organism to analyze
+    ont = as.character('BP'),    # ontology term
+    pAdjustMethod = "BH",        # method for multiple testing correction - benjamini & hochberg
+    pvalueCutoff = 0.05,         # P-value cutoff for the proteomic course
+    qvalueCutoff = 0.05,         # default to 0.2
+    readable = TRUE,            # return gene symbols
+    minGSSize = 40,              # minimal size of genes annotated by Ontology term for testing.
+    maxGSSize = 500
+  )
+  
+  x <- summary(ego1)
+  head(x[colnames(x) %in% c("Description", "pvalue")], 10)
+  barplot(ego1, showCategory = 40, title = "Upregulated Genes (Clone 10340)", cex.lab=0.01)
+}
+
+PCA_GO_Enrich <- function(DGE_Object){
+  print("Ensure DGE object is on corrected data i.e. updated design matrix")
+  
+  PCA_function <- prcomp(t(DGE_Object$counts)) 
+  PC1 <- facto_summarize(PCA_function, "var", axes = 1, select = list(contrib = 50))[,-1]
+  PC2 <- facto_summarize(PCA_function, "var", axes = 2, select = list(contrib = 50))[,-1]
+  PC1_list <- rownames(PC1)
+  idx <- match(PC1_list, DGE_Object$genes$ensembl_gene_id)
+  PC1_list <- DGE_Object[idx,]
+  PC1_list <- PC1_list$genes$hgnc_symbol
+  PC1_list <- PC1_list[PC1_list != ""]
+  
+  GOPlot(PC1_list)
+  
+  return(PC1_list)
+}
+
+
+######################################################################################################
+#  P L O T T I N G  F U N C T I O N S                                                                     
+######################################################################################################
+
+
+PlotMDS <- function(DATA, GROUP.vector, LEGENDLOC.str, TITLE.str, col.pal = c(), DOT.str=FALSE, logCPM=TRUE, CEX.int=1){
+  #GROUP <- DGE_Object$samples$group
+  if (!(length(col.pal)>1)){
+    GroupLength <- length(unique(GROUP.vector))
+    col.pal <- brewer.pal(GroupLength,"Set1")
+  } 
+  
+  if (DOT.str){
+    PCH=20
+  } else {
+    PCH = NULL
+  }
+  
+  if (logCPM){
+    #GROUP.vector <- relevel(as.factor(GROUP.vector), ref = 1) 
+    plotMDS(cpm(DATA, prior.count =1, log =TRUE), col=as.vector(col.pal[GROUP.vector]), main=TITLE.str, pch=PCH,cex = CEX.int) 
+    legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 20,  col=as.vector(col.pal[unique(GROUP.vector)]), cex = 1, pt.cex=2)
+    
+  } else {
+   # GROUP.vector <- relevel(as.factor(GROUP.vector), ref = 1) 
+    plotMDS(DATA, col=as.vector(col.pal[GROUP.vector]), main=TITLE.str, pch=PCH, cex = CEX.int) 
+    legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 20,  col=as.vector(col.pal[unique(GROUP.vector)]), cex = 1, pt.cex=2)
+  }
+}
+
+PlotRLE <- function(DATA, GROUP.vector, LEGENDLOC.str, TITLE.str, col.pal = c(),leg_cex=1.1){
+  if (!length(col.pal)>1){
+    GroupLength <- length(unique(GROUP.vector))
+    col.pal <- brewer.pal(GroupLength,"Accent")
+  }
+  
+#  CountData <- newSeqExpressionSet(DGE_Object$counts, phenoData = data.frame(x = GROUP.vector, row.names =colnames(DGE_Object$counts)))
+  GROUP.vector <- as.factor(GROUP.vector) 
+  
+  EDASeq::plotRLE(DATA, col= as.vector(col.pal[GROUP.vector]), main = TITLE.str, ylab="Log-ratios", outline = FALSE, las=2, cex.axis = 0.5) 
+  legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 19,  col=col.pal[unique(GROUP.vector)], cex = leg_cex)
+}
+
+PlotRLE_manual <- function(DATA, GROUP.vector, LEGENDLOC.str, TITLE.str, col.pal = c(), isLOG=FALSE, textSize=1.5, ylim = c(-6,6)){
+  ### This function is based on code by Momeneh Foroutan ###
+  
+  # https://github.com/drisso/EDASeq/blob/master/R/methods-SeqExpressionSet.R
+  
+  library(dplyr)
+  library(matrixStats)
+  
+  annot <- setNames(GROUP.vector, colnames(DATA))
+  if (!(length(col.pal)>1)){
+    GroupLength <- length(unique(GROUP.vector))
+    col.pal <- brewer.pal(GroupLength,"Set1")
+  }
+  
+  ## Calculate relative log ratio
+  if (!(isLOG)){
+    rle <- log(DATA+1) - rowMedians(log(DATA+1))
+    rleLong <- reshape2::melt(rle) 
+  } else {
+    rle <- DATA - rowMedians(DATA)
+    rleLong <- reshape2::melt(rle) 
+  }
+  
+  ## Prep data for plotting
+  rleLong <- rleLong %>%
+    group_by(Var2) %>%
+    mutate(MedRLE = median(value)) %>%
+    ungroup() %>%
+    data.frame()
+  rleLong$colourBy <- as.vector(annot[rleLong$Var2])
+  
+  ### Excludes outliers
+  p <- ggplot(rleLong, aes(x = Var2, y = value, fill = colourBy)) +
+    geom_boxplot(alpha = 0.7, outlier.shape=NA) + 
+    scale_fill_manual(values = col.pal) +
+    scale_y_continuous(limits = ylim)+
+    theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = rel(textSize)), legend.title=element_blank())
+  print(p)
+}
+
+PlotMyPCA <- function(DATA, GROUP.vector, LEGENDLOC.str, TITLE.str, LOG.str=TRUE, col.pal = c()){
+  # CountData <- newSeqExpressionSet(DGE_Object$counts, phenoData = data.frame(x = DGE_Object$samples$group, row.names =colnames(DGE_Object$counts)))
+  #  GROUP <- DGE_Object$samples$group
+  if (length(col.pal)>1){
+    GroupLength <- length(unique(GROUP.vector))
+  } else {
+    GroupLength <- length(unique(GROUP.vector))
+    col.pal <- brewer.pal(GroupLength,"Set1")
+  }
+  
+  
+  if (LOG.str){
+    print("Assuming data is already log-transformed...")
+  } else {
+    print("Log-transforming data...")
+  }
+  
+ # GROUP.vector <- relevel(as.factor(GROUP.vector), ref = 1)  
+  plotPCA(DATA, col=as.vector(col.pal[GROUP.vector]), main=TITLE.str, labels = FALSE, pch=19, isLog=LOG.str, cex=1.5) 
+  legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 19,  col=col.pal[unique(GROUP.vector)], cex = 1.5, pt.cex=2)
+  
+  ###????
+}
+
+
+
+PlotPCA2Factor <- function(DATA, GROUP.vector, FACTOR2.vector, LEGENDLOC.str, LEGENDLOC2.str, TITLE.str, LOG.str=TRUE, col.pal = c(), K.int=2, CEX.int=1.5, LABEL.str=FALSE){
+ 
+  ## Get colours
+  if (length(col.pal)>1){
+    GroupLength <- length(unique(GROUP.vector))
+  } else {
+    GroupLength <- length(unique(GROUP.vector))
+    col.pal <- brewer.pal(GroupLength,"Set1")
+  }
+  
+  if (LOG.str){
+    print("Assuming data is already log-transformed...")
+  } else {
+    print("Log-transforming data...")
+  }
+  
+  ## Get shapes
+  if (length(unique(FACTOR2.vector)) > 5){
+    pch_list <- c(21:25, 1:20)
+    pch_list <- pch_list[1:length(unique(FACTOR2.vector))]
+    names(pch_list) <- unique(FACTOR2.vector)
+  } else {
+    pch_list <- c(15, 17, 18, 19, 25)
+    pch_list <- pch_list[1:length(unique(FACTOR2.vector))]
+    names(pch_list) <- unique(FACTOR2.vector)
+  }
+
+  #GROUP.vector <- relevel(as.factor(GROUP.vector), ref = 1) 
+   
+  if (K.int > 2){
+    par(mar=c(1, 1, 1, 1))
+    plotPCA(DATA, col=as.vector(col.pal[GROUP.vector]), main=TITLE.str, k=K.int, labels = LABEL.str, pch=pch_list[FACTOR2.vector], isLog=LOG.str, cex=CEX.int) 
+    legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 20,  col=col.pal[unique(GROUP.vector)], cex = 0.8, pt.cex=2)
+    legend(LEGENDLOC2.str, legend = names(pch_list),pch = pch_list[names(pch_list)], cex = 0.8, pt.cex=1.5)
+    
+  } else {
+    plotPCA(DATA, col=as.vector(col.pal[GROUP.vector]), main=TITLE.str, labels = LABEL.str, pch=pch_list[FACTOR2.vector], isLog=LOG.str, cex=CEX.int) 
+    legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 20,  col=col.pal[unique(GROUP.vector)], cex = 0.8, pt.cex=2)
+    legend(LEGENDLOC2.str, legend = names(pch_list),pch = pch_list[names(pch_list)], cex = 0.8, pt.cex=1.5)
+    
+  }
+
+}
+
+
+SingscoreLandscape <- function(DGE_Object, GeneSet1, GeneSet2, SET1.str, SET2.str, SAMPLE.ANNOT){
+  print("Ensure DGE object is on corrected data i.e. updated design matrix")
+  suppressMessages(library(singscore))
+  
+  # Filter to only include genes with an Entrez gene ID 
+  DGE_Object <- DGE_Object[which(!is.na(DGE_Object$genes$entrezgene)), ]
+  x <- rownames(DGE_Object$counts)
+  rownames(DGE_Object$counts) <- DGE_Object$genes$entrezgene
+  
+  rankData <- rankGenes(DGE_Object)
+  
+  scoredf_1 <- simpleScore(rankData, upSet = GeneSet1)
+  scoredf_2 <- simpleScore(rankData, upSet = GeneSet2)
+  
+  tcgaLandscape <- plotScoreLandscape(scoredf_1, scoredf_2, 
+                                      scorenames = c(SET1.str,SET2.str), isInteractive = FALSE)
+  
+  projectScoreLandscape(plotObj = tcgaLandscape, scoredf_1, 
+                        scoredf_2,
+                        subSamples = rownames(scoredf_1),
+                        annot = SAMPLE.ANNOT, 
+                        sampleLabels = rownames(scoredf_1),
+                        isInteractive = FALSE)
+}
+
+
+######################################################################################################
+#  S V A  F U N C T I O N S                                                                     
+######################################################################################################
+
+SVA <- function(DGE_Object, DESIGN.modelmatrix){
+  SV <- wsva(cpm(DGE_Object, log=TRUE, prior.count = 1), design = DESIGN.modelmatrix, n.sv = 10, plot = TRUE) 
+  return(SV)
+}
+
+SVA_GetCorrectedData <- function(DGE_Object, DESIGN.modelmatrix, SV, SV.numb){
+  CORRECTED_DATA <- removeBatchEffect(cpm(DGE_Object, log=TRUE, prior.count = 1), design = DESIGN.modelmatrix, 
+                                      covariates = SV[,1:SV.numb]) #logCPM
+  return(CORRECTED_DATA)
+}
+
+SVA_GetNewDESIGN <- function(DESIGN.modelmatrix, SV, SV.numb){
+  if (SV.numb==1){
+    DESIGN.SV.modelmatrix <- cbind(DESIGN.modelmatrix, SV1=SV[,1]) 
+  }
+  if (SV.numb==2){
+    DESIGN.SV.modelmatrix <- cbind(DESIGN.modelmatrix, SV1=SV[,1], SV2=SV[,2]) 
+  }
+  if (SV.numb==3){
+    DESIGN.SV.modelmatrix <- cbind(DESIGN.modelmatrix, SV1=SV[,1], SV2=SV[,2], SV3=SV[,3])
+  }
+  
+  if (SV.numb==4){
+    DESIGN.SV.modelmatrix <- cbind(DESIGN.modelmatrix, SV1=SV[,1], SV2=SV[,2], SV3=SV[,3], SV4=SV[,4])
+  }
+  
+  return(DESIGN.SV.modelmatrix)
+}
+
+
+######################################################################################################
+#  C L U S T E R I N G   F U N C T I O N S                                                                     
+######################################################################################################
+
+
+# Adjusted rand index test for overlap between technology and cluster labelings. 
+# This goes between 0 (completely dissimilar clustering) to 1 (identical clustering). 
+# The adjustment corrects for chance grouping between cluster elements.
+# https://davetang.org/muse/2017/09/21/adjusted-rand-index/
+
+
+KmeansClustering <- function(DGE_Object, K){
+  print("Ensure DGE object is on corrected data i.e. updated design matrix if SVA was performed")
+  
+  km.res <- kmeans(t(DGE_Object$counts), K)
+  fviz_cluster(km.res, data=t(DGE_Object$counts), #palette = c("#00AFBB","#2E9FDF", "#E7B800", "#FC4E07"),
+               ggtheme = theme_minimal(),
+               main = "K-means Clustering")
+  #scaled
+  km.res <- kmeans(scale(t(DGE_Object$counts)), K)
+  fviz_cluster(km.res, data=scale(t(DGE_Object$counts)),# palette = c("#00AFBB","#2E9FDF", "#E7B800", "#FC4E07"),
+               ggtheme = theme_minimal(),
+               main = "K-means Clustering (Scaled)")
+  
+}
+
+
+
+dist2d <- function(a,b,c) {
+  v1 <- b - c
+  v2 <- a - b
+  m <- cbind(v1,v2)
+  d <- det(m)/sqrt(sum(v1*v1))
+  d
+}
+
+unit_scale <- function(x) {
+  a <- min(x) 
+  b <- max(x) 
+  (x - a)/(b - a) 
+}
+
+
+CalcElbow <- function(values_vec, decr=TRUE){
+  ## https://raghavan.usc.edu//papers/kneedle-simplex11.pdf
+  ## https://github.com/arvkevi/kneed/blob/master/kneed/knee_locator.py
+  
+  if (decr){
+    sign = -1
+  } else {
+    sign = 1
+  }
+  
+  ## Sort vector
+  values_vec <- sort(values_vec, decreasing = TRUE)
+  values_vec <- as.vector(values_vec)
+  
+  ## Unit scale
+  scaled_vec <- scale(values_vec)
+  unit_scaled_vec <- unit_scale(as.vector(scaled_vec))
+  
+  ## Calculate kneedle
+  start = c(1, unit_scaled_vec[1])
+  end = c(length(unit_scaled_vec), unit_scaled_vec[length(unit_scaled_vec)])
+  k <- which.max(lapply(1:length(unit_scaled_vec),
+                        function(idx) {
+                          sign * -1 * dist2d(c(idx, unit_scaled_vec[idx]),
+                                             start,
+                                             end)}))
+  return(values_vec[k])
+}

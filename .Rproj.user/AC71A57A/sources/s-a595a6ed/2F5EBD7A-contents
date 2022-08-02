@@ -1,0 +1,307 @@
+
+##  bit.ly/WEHIscRNAworkshop
+##  https://github.com/WEHISCORE/scRNA-seq_workshop
+
+# osca.bioconductor.org
+# https://www.embopress.org/doi/full/10.15252/msb.20188746
+
+
+## ALSO broad SC workshop: https://broadinstitute.github.io/2019_scWorkshop/
+
+### Load using source("/Users/whitfieldh/Desktop/PhD_Project_MPE/Script/SCFunctions.R")
+
+library(SingleCellExperiment)
+library(scRNAseq)
+library(scater)
+library(scran)
+library(DropletUtils)
+library(Matrix)
+library(ensembldb)
+library(PCAtools)
+
+######################################################################################################
+# M E T A                                                                  
+######################################################################################################
+
+SC_Processing <- function(sce_object){
+  sce_object <- DropEmpty(sce_object) 
+  sce_object <- GetAnnot(sce_object)
+  
+  sce_object <- FilterSC(sce_object)
+  
+  sce_object <- NormSC(sce_object)
+  
+  return(sce_object)   # return value 
+}
+
+
+ReduceDims <- function(sce_object, numb_HVGs){
+  
+  sce_object <- ModelGeneVar(sce_object, numb_HVGs)
+  sce_HVG <- altExp(sce_object, "HVGs")
+  sce_HVG <- PCA_on_subset(sce_HVG, rownames(sce_HVG))
+  altExp(sce_object, "HVGs") <- sce_HVG
+  
+  sce_object <- PCA_on_all(sce_object)
+  
+  #sce_object <- run_tSNE(sce_object, save_path)
+  
+  return(sce_object)
+}
+
+
+QC_Plots <- function(sce_object, sce_name_str, OUTPUT_DIR){
+  
+  SAVE_PATH_LIBSIZE <- paste(OUTPUT_DIR,"QC\\library_sizes\\SizeFactorHistogram_", sce_name_str, ".png", sep="")
+  SAVE_PATH_DECONV <- paste(OUTPUT_DIR,"QC\\library_sizes\\SizeFactor_deconv_Histogram_",  sce_name_str, ".png", sep="")
+  SAVE_PATH_BOTH <- paste(OUTPUT_DIR,"QC\\library_sizes\\DeconvFactorVsLibSizeHistogram_", sce_name_str, ".png", sep="")
+  SAVE_PATH_MEANVAR <- paste(OUTPUT_DIR,"QC\\GeneVar\\MeanVar_", sce_name_str, ".png", sep="")
+  
+  PlotSizeFactors(sce_object, SAVE_PATH_LIBSIZE, SAVE_PATH_DECONV, SAVE_PATH_BOTH)
+  PlotMeanVar(sce_object, SAVE_PATH_MEANVAR)
+}
+
+######################################################################################################
+#  F U N C T I O N S                                                                     
+######################################################################################################
+
+DropEmpty_histogram <- function(sce_object, sce_name_str, OUTPUT_DIR){
+  
+  save_path <- paste(OUTPUT_DIR,"QC\\filtering\\EmptyDropHistogram_", sce_name_str, ".png", sep="")
+  
+  set.seed(100)
+  e.out <- DropletUtils::emptyDrops(counts(sce_object))
+  summary(e.out$FDR <= 0.001)
+  
+  all.out <- emptyDrops(counts(sce_object), lower=100, test.ambient=TRUE)
+  # Ideally, this histogram should look close to uniform.
+  # Large peaks near zero indicate that barcodes with total
+  # counts below 'lower' are not ambient in origin.
+  png(save_path)
+  hist(all.out$PValue[all.out$Total <= 100 & all.out$Total > 0], xlab="P-value", main="", col="grey80")
+  dev.off()
+  ### Remove empty droplets
+  sce_object <- sce_object[,which(e.out$FDR <= 0.001)]
+  
+  return(sce_object)
+}
+
+DropEmpty <- function(sce_object){
+  set.seed(100)
+  e.out <- DropletUtils::emptyDrops(counts(sce_object))
+  summary(e.out$FDR <= 0.001)
+  sce_object <- sce_object[,which(e.out$FDR <= 0.001)]
+  return(sce_object)
+}
+
+GetAnnot <- function(sce_object){
+  #ah <- AnnotationHub()
+  # keytypes(ensdb)
+  ensdb <- AnnotationHub()[["AH73881"]] #GRCh38, ensembl97 hsa 
+  rowData(sce_object)$ENSEMBL <- rownames(sce_object)
+  rowData(sce_object)$SYMBOL <- mapIds(ensdb, 
+                                     keys=rownames(sce_object),
+                                     keytype="GENEID", column="SYMBOL")
+  rowData(sce_object)$SEQNAME <- mapIds(ensdb,
+                                      keys=rownames(sce_object),
+                                      keytype="GENEID", column="SEQNAME")
+  # or
+  ## Download the relevant Ensembl annotation database
+  # using AnnotationHub resources
+ # library(AnnotationHub)
+ # ah <- AnnotationHub()
+ # query(ah, c("Mus musculus", "Ensembl", "v97"))
+  # Annotate each gene with its chromosome location
+ # ens.mm.v97 <- ah[["AH73905"]]
+ # location <- mapIds(ens.mm.v97, keys=rownames(sce.416b),
+ #                    keytype="GENEID", column="SEQNAME")
+  # Identify the mitochondrial genes
+ # is.mito <- which(location=="MT")
+  return(sce_object)
+}
+
+
+FilterSC <- function(sce_object){
+  
+  sce_object <- scater::addPerCellQC(sce_object)
+  sce_object <- scater::addPerFeatureQC(sce_object)
+
+  ### Filter cells by library size
+  qc.lib2 <- scater::isOutlier(sce_object$sum, log=TRUE, type="lower")
+  
+  ### Filter cells by number of expressed/detected genes per cell
+  qc.nexprs2 <- scater::isOutlier(sce_object$detected, log=TRUE,  type="lower")
+  
+  ### For spike ins
+  #qc.spike2 <- scater::isOutlier(sce_object$altexps_ERCC_percent, type="higher") 
+  
+  
+  ### Mito
+  mito <- which(rowData(sce_object)$SEQNAME=="MT")
+  stats <- perCellQCMetrics(sce_object, subsets=list(Mt=mito))
+  qc.mito2 <- scater::isOutlier(stats$subsets_Mt_percent,  type="higher")
+  discard2 <- qc.lib2 | qc.nexprs2 | qc.mito2
+  
+  sce_object <- sce_object[,!discard2]
+  
+  return(sce_object)
+}
+
+
+FilterCustom <- function(sce_object, GenesDetect, MitoPercent){
+  
+  ### Get QC metrics
+  sce_object <- scater::addPerCellQC(sce_object)
+  sce_object <- scater::addPerFeatureQC(sce_object)
+  
+  ## Filter by genes
+  qc.lib <- scater::isOutlier(sce_object$sum, log=TRUE, type="lower")
+  #qc.nexprs <- scater::isOutlier(sce_object$detected, log=TRUE,  type="lower")
+  qc.nexprs <- sce_object$detected<GenesDetect
+  GeneFilter <- qc.lib | qc.nexprs 
+  
+  ### Mito subset QC
+  mito <- which(rowData(sce_object)$SEQNAME=="MT")
+  stats <- perCellQCMetrics(sce_object, subsets=list(Mt=mito))
+  colData(sce_object) <- cbind(colData(sce_object), stats[colnames(stats) %in% c("subsets_Mt_sum", "subsets_Mt_detected", "subsets_Mt_percent")])
+  
+  ### Filter by Mito
+  MitoFilter <- sce_object$subsets_Mt_percent>MitoPercent
+  
+  ### Discard
+  discard <- GeneFilter | MitoFilter 
+  sce_object$discarded <- discard
+  sce_object <- sce_object[,!discard]
+  
+  return(sce_object)
+}
+
+PlotSizeFactors <- function(sce_object, save_path_ls, save_path_deconv, save_path_both){
+  
+  
+  png(save_path_ls)
+  sce_libsf <- librarySizeFactors(sce_object)
+  hist(log10(sce_libsf), xlab="Log10[Size factor]", 
+       col="grey80")
+  dev.off()
+  
+  ls.sce <- colSums(counts(sce_object))
+  #plot(ls.sce, sce_libsf, log="xy",
+   #    xlab="Library size", ylab="Size factor")
+  
+  ## deconv
+  set.seed(100)
+  clust_sce <- quickCluster(sce_object)
+  deconv_sce <- calculateSumFactors(sce_object, 
+                                          cluster=clust_sce, min.mean=0.1)
+  png(save_path_deconv)
+  hist(log10(deconv_sce),
+       xlab="Log10[Size factor]", 
+       col="grey80")
+  dev.off()
+  
+  png(save_path_both)
+  plot(ls.sce, deconv_sce, log="xy", 
+       xlab="Library size", ylab="Size factor")  # can also colour by cell types
+  
+  dev.off()
+  
+}
+
+
+NormSC <- function(sce_object){
+  set.seed(1000)
+  clusters <- quickCluster(sce_object)
+  
+  ## Adds sizeFactors() to sce object
+  sce_object <- scran::computeSumFactors(sce_object, cluster=clusters)  # min.mean=0.1 ?
+  
+  ## Apply convolution size factors computed
+  sce_object <- logNormCounts(sce_object)
+  
+  return(sce_object)
+}
+
+PlotMeanVar <- function(sce_object, save_path){
+  set.seed(1001)
+  sce_object_poisson <- modelGeneVarByPoisson(sce_object)
+  
+  sce_object_poisson[order(sce_object_poisson$bio,decreasing=TRUE),]
+  
+  png(save_path)
+  plot(sce_object_poisson$mean, sce_object_poisson$total, 
+       pch=16, xlab="Mean of log-expression",
+       ylab="Variance of log-expression")
+  curve(metadata(sce_object_poisson)$trend(x),
+        col="dodgerblue", add=TRUE)
+  
+  dev.off()
+}
+
+ModelGeneVar <- function(sce_object, numb_HVGs){
+  set.seed(1001)
+  sce_object_poisson <- modelGeneVarByPoisson(sce_object)
+  chosen <- getTopHVGs(sce_object_poisson, n=numb_HVGs) #n=2000
+  sce_object_HVG <- sce_object[chosen,]
+  
+  rowData(sce_object)$BCV <- sce_object_poisson$bio
+  
+  altExp(sce_object, "HVGs") <- sce_object_HVG
+  
+  return(sce_object)
+}
+
+PCA_on_subset <- function(sce_object, subset_lst){
+  
+  set.seed(100)
+  sce_object <- runPCA(sce_object,  subset_row=subset_lst)
+  percent.var <- attr(reducedDim(sce_object),  "percentVar")
+  chosen.elbow <- PCAtools::findElbowPoint(percent.var)
+  
+  reducedDim(sce_object, "PCA_elbow") <- reducedDim(sce_object, "PCA")[,1:chosen.elbow]
+  
+  return(sce_object)
+}
+
+PCA_on_all <- function(sce_object){
+  
+  set.seed(100)
+  sce_object <- runPCA(sce_object, exprs_values="logcounts", scale=FALSE)
+  percent.var <- attr(reducedDim(sce_object),  "percentVar")
+  chosen.elbow <- PCAtools::findElbowPoint(percent.var)
+  
+  reducedDim(sce_object, "PCA_elbow") <- reducedDim(sce_object, "PCA")[,1:chosen.elbow]
+  
+  return(sce_object)
+}
+
+plot_tSNE <- function(sce_object, save_path){
+  set.seed(00101001101)
+  sce_object <- runTSNE(sce_object, dimred="PCA")
+  
+  png(save_path)
+  plotReducedDim(sce_object, dimred="TSNE") #colour_by=colour_by_str
+  dev.off()
+  
+  return(sce_object)
+}
+
+
+
+BarcodePlot <- function(){
+
+  bcrank_lung <- barcodeRanks(counts(LUNG_raw_sce))
+
+  # Only showing unique points for plotting speed.
+  uniq <- !duplicated(bcrank_lung$rank)
+  plot(bcrank_lung$rank[uniq], bcrank_lung$total[uniq], log="xy", main="Barcode Rank Plot (Lung)",
+     xlab="Rank", ylab="Total UMI count", cex.lab=1.2, xaxt="n", yaxt="n")
+  abline(h=metadata(bcrank_lung)$inflection, col="darkgreen", lty=2)
+  abline(h=metadata(bcrank_lung)$knee, col="dodgerblue", lty=2)
+  axis(side=1, at=c(100, 1000, 10000, 100000, 1000000), labels = c("100",  "1000", "10k", "100k", "1M"))
+  axis(side=2, at=c(10, 100, 1000, 10000, 100000,1000000), labels = c("10", "100",  "1000", "10k", "100k", "1M"))
+  legend("bottomleft", legend=c("Inflection", "Knee"), 
+       col=c("darkgreen", "dodgerblue"), lty=2, cex=1.2)
+  
+}
+

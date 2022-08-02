@@ -1,0 +1,263 @@
+######################################################################################################
+##
+##  HELPER FUNCTIONS FOR WRANGLING SC DATA
+##
+
+## source("/stornext/Home/data/allstaff/w/whitfield.h/scfunc/scWrangle.R")
+
+### --- SCE OBJ WRANGLING -------------
+
+
+OrderLabels <- function(sce_obj, label_str, order_by,
+                        colnames_to_keep=NULL, exclude_values=NULL){
+
+  ## Prepare
+  plot_df <- colData(sce_obj)[,colnames(colData(sce_obj)) %in% colnames_to_keep] %>% as.data.frame()
+  plot_df <- plot_df[!(is.na(plot_df[[label_str]])),]
+
+  ## In case some columns are causing problems, usually slingshot
+  if (is.null(colnames_to_keep)){
+    colnames_to_keep <- c(order_by,"CellID")
+  } else {
+    colnames_to_keep <- c(colnames_to_keep, order_by)
+  }
+
+  ## Exclude some value from ordering
+  if (!(is.null(exclude_values))){
+    plot_df[[label_str]] <- replace(as.vector(plot_df[[label_str]]),
+                                    which(plot_df[[order_by]] %in% exclude_values),
+                                    "Excl. Val.")
+  }
+
+  xx =plot_df[order(plot_df[[order_by]]),]
+  label_order =  unique(xx[[label_str]])
+  return(label_order)
+}
+
+
+Check_obj <- function(dat_obj, desired_class, dat_assays = "raw"){
+
+  message(paste0("  Changing object class to ", desired_class))
+
+  if (desired_class == "Seurat"){
+    if (class(dat_obj)[1] %in% c("SummarizedExperiment", "SingleCellExperiment")){
+      if (names(assays(dat_obj)) == "counts"){
+        output_obj <- as.Seurat(dat_obj, counts="counts", data=NULL)
+      } else {
+        output_obj <- as.Seurat(dat_obj, counts="counts", data = "logcounts")
+      }
+
+    } else {
+      output_obj <- dat_obj
+    }
+  } else if (desired_class == "SummarizedExperiment"){
+    if (class(dat_obj)[1] == "Seurat"){
+      output_obj <- as.SingleCellExperiment(dat_obj)
+    }
+  } else if (desired_class == "SingleCellExperiment"){
+    if (class(dat_obj)[1] == "Seurat"){
+      output_obj <- Seurat2SCE(dat_obj, dat_count=dat_assays)
+    } else if (class(dat_obj)[1] == "SummarizedExperiment"){
+      if ("logcounts" %in% names(assays(dat_obj)))
+        output_obj <- SingleCellExperiment(assays=list(counts=counts(dat_obj), logcounts=logcounts(dat_obj)))
+    } else {
+      output_obj <- dat_obj
+    }
+  }
+
+  return(output_obj)
+}
+
+
+## --- Proportion tables
+
+CellTypeTable_perClust <- function(sce_object, cluster_label, celltype_label){
+
+  coldata <- colData(sce_object)[,colnames(colData(sce_object))
+                                 %in% c(cluster_label, celltype_label)]
+
+  cell_labels <- factor(unique(coldata[[celltype_label]]), levels=unique(coldata[[celltype_label]]))
+  clusters <- as.vector(unique(coldata[[cluster_label]]))
+
+  ClustersTable <- data.frame(row.names=cell_labels)
+  for (iClust in clusters){
+
+    iVector <- rep(0, length(cell_labels))
+    names(iVector) <- cell_labels
+
+    x <- coldata[coldata[[cluster_label]] ==  iClust,]
+    iProp_table <- table(x[[celltype_label]])/nrow(x)
+
+    iVector[names(iProp_table)] <- as.vector(iProp_table)
+
+    ClustersTable[[iClust]] <- iVector
+  }
+
+  return(ClustersTable)
+}
+
+
+GetProps_perPatient <- function(sce_obj, label="CellType_refined", patient_id="PatientID"){
+
+  CellType_idx <- unique(sce_obj[[label]])
+
+  FREQ_TABLE <- data.frame(row.names = CellType_idx)
+  for (i in unique(sce_obj[[patient_id]])){
+    x <- table(sce_obj[,sce_obj[[patient_id]] == i][[label]])
+    iColumn <- as.vector(x[CellType_idx])
+    iColumn <- (iColumn/ncol(sce_obj[,sce_obj[[patient_id]] == i]))*100
+    FREQ_TABLE[[i]] <- iColumn
+  }
+  FREQ_TABLE[is.na(FREQ_TABLE)] <- 0
+
+  return(FREQ_TABLE)
+}
+
+
+GetProps <- function(sce_obj, label){
+
+
+  FREQ_TABLE <- data.frame(row.names =  names(table(sce_obj[[label]])),
+                           Proportion = (as.vector(table(sce_obj[[label]]))/ncol(sce_obj))*100,
+                           Freq = as.vector(table(sce_obj[[label]])))
+
+  FREQ_TABLE[is.na(FREQ_TABLE)] <- 0
+
+  return(FREQ_TABLE)
+}
+
+
+
+### --- DE ANALYSIS -------------
+
+
+GetDEgenes <- function(sce_x, cluster_vec,
+                       str_x, str_y,
+                       de_type="wilcox", dir_str="up",
+                       p_thres=0.05, fdr_thresh=0.05){
+  if (de_type=="wilcox"){
+    out=pairwiseWilcox(sce_x,cluster_vec, direction=dir_str)
+  } else if (de_type=="binom"){
+    out=pairwiseBinom(sce_x,cluster_vec, direction=dir_str)
+  } else if (de_type=="t"){
+    out= pairwiseTTests(sce_x,cluster_vec, direction=dir_str)
+  } else {
+    message("Performing wilcox test")
+    out=pairwiseWilcox(sce_x,cluster_vec, direction=dir_str)
+  }
+
+  dat_x = out$statistics[[which(out$pairs$first==str_x & out$pairs$second==str_y)]]
+  dat_y = out$statistics[[which(out$pairs$first==str_y & out$pairs$second==str_x)]]
+
+  dat_x = dat_x[(dat_x$p.value < p_thres) & (dat_x$FDR < fdr_thresh),]
+  dat_y = dat_y[(dat_y$p.value < p_thres) & (dat_y$FDR < fdr_thresh),]
+
+  output=list()
+  output[[str_x]] <- rownames(dat_x[order(dat_x$p.value),])
+  output[[str_y]] <- rownames(dat_y[order(dat_y$p.value),])
+  return(output)
+}
+
+
+
+
+
+
+
+### --- GENE ID CONVERSIONS -----------
+
+
+convertHumanGeneList <- function(x){
+  # Basic function to convert human to mouse gene names
+  # https://www.r-bloggers.com/2016/10/converting-mouse-to-human-gene-names-with-biomart-package/
+  require("biomaRt")
+  human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+  mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+  genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol", values = x , mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+  humanx <- unique(genesV2[, 2])
+  # Print the first 6 genes found to the screen
+#  print(head(humanx))
+  return(humanx)
+}
+
+convertMouseGeneList <- function(x){
+  # Basic function to convert mouse to human gene names
+  # https://www.r-bloggers.com/2016/10/converting-mouse-to-human-gene-names-with-biomart-package/
+  require("biomaRt")
+  human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+  mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+  genesV2 = getLDS(attributes = c("mgi_symbol"), filters = "mgi_symbol", values = x , mart = mouse, attributesL = c("hgnc_symbol"), martL = human, uniqueRows=T)
+  humanx <- unique(genesV2[, 2])
+  # Print the first 6 genes found to the screen
+ # print(head(humanx))
+  return(humanx)
+}
+
+convertGeneSpecies_listOfLists <- function(lst_lst, from="mouse"){
+
+  human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+  mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+  x = unique(as.vector(unlist(lst_lst)))
+
+  if (from == "mouse"){
+    genesV2 = getLDS(attributes = c("mgi_symbol"), filters = "mgi_symbol",
+                     values = x , mart = mouse, attributesL = c("hgnc_symbol"), martL = human, uniqueRows=T)
+  } else if (from == "human"){
+    genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol",
+                     values = x , mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+  }
+  convert <- setNames(genesV2[,2],genesV2[,1])
+
+  new_lst <- lapply(names(lst_lst), function(gs_str){
+    as.vector(convert[lst_lst[[gs_str]]])
+  })
+}
+
+
+### ---- CALC ELBOW --------
+
+
+dist2d <- function(a,b,c) {
+  v1 <- b - c
+  v2 <- a - b
+  m <- cbind(v1,v2)
+  d <- det(m)/sqrt(sum(v1*v1))
+  d
+}
+
+unit_scale <- function(x) {
+  a <- min(x)
+  b <- max(x)
+  (x - a)/(b - a)
+}
+
+
+CalcElbow <- function(values_vec, decr=TRUE){
+  ## https://raghavan.usc.edu//papers/kneedle-simplex11.pdf
+  ## https://github.com/arvkevi/kneed/blob/master/kneed/knee_locator.py
+
+  if (decr){
+    sign = -1
+  } else {
+    sign = 1
+  }
+
+  ## Sort vector
+  values_vec <- sort(values_vec, decreasing = TRUE)
+  values_vec <- as.vector(values_vec)
+
+  ## Unit scale
+  scaled_vec <- scale(values_vec)
+  unit_scaled_vec <- unit_scale(as.vector(scaled_vec))
+
+  ## Calculate kneedle
+  start = c(1, unit_scaled_vec[1])
+  end = c(length(unit_scaled_vec), unit_scaled_vec[length(unit_scaled_vec)])
+  k <- which.max(lapply(1:length(unit_scaled_vec),
+                        function(idx) {
+                          sign * -1 * dist2d(c(idx, unit_scaled_vec[idx]),
+                                             start,
+                                             end)}))
+  return(values_vec[k])
+}

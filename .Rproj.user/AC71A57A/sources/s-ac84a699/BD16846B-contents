@@ -1,0 +1,1039 @@
+######################################################################################################
+##
+##  MPE PAPER FIGURES
+##
+##  - Analysis done mainly by /scripts/MPE_SC.Rmd
+##  - Epithelial subset analysis done with MPE_EpithelialCells.Rmd
+##  - InferCNV stuff done with MPE_findCNVs.R and the many variations of that...
+##  - Periphery functions for this script are in MPEFunctions.R
+##
+##
+######------------------NOTES:
+##
+##
+
+#x_dat <- Mega_BCB_sce[, Mega_BCB_sce$CellType_refined %in% c("Mesothelial", "Malignant")][,colSums(counts(Mega_BCB_sce[rownames(Mega_BCB_sce) %in% c("EPCAM", "DES"), Mega_BCB_sce$CellType_refined %in% c("Mesothelial", "Malignant")])>0)==2]
+#table(x_dat$CellType_refined)
+#table(x_dat$PatientID)
+
+#libsize=x_dat$sum
+#libsize_2 = Mega_BCB_sce$sum
+
+### Load stuff
+
+suppressMessages(library(SingleCellExperiment))
+suppressMessages(library(scRNAseq))
+library(scater)
+library(scran)
+library(DropletUtils)
+library(Matrix)
+library(BiocFileCache)
+library(ensembldb)
+library(dplyr)
+library(AnnotationHub)
+library(pheatmap)
+suppressMessages(library(SingleR))
+library(scmap)
+library(uwot)
+library(RColorBrewer)
+library("viridis")
+library(networkD3)
+library(plyr)
+library(tidyverse)
+library(edgeR)
+library(genefu)
+library(PMA)
+library(gridExtra)
+library(grid)
+library(reshape2)
+library(ggplot2)
+library(scales)
+library(gtable)
+library(reshape2)
+
+library(scMerge)
+
+library(heatmap3)
+library(dcanr)
+
+### My scripts
+source("C:\\Users\\whitfield.h\\Desktop\\Projects\\PhD_Project_MPE\\Scripts\\PaperFigures\\MPEPaperFigures_Functions.R")
+
+### Directories
+
+SAVEDATA_DIR <- "C:\\Users\\whitfield.h\\Desktop\\Projects\\PhD_Project_MPE\\Data\\"
+SCE_DIR <- "W:\\PhD_Project_MPE\\Data\\sce_objects\\"
+LOCAL_SCE_DIR <- "C:\\Users\\whitfield.h\\Desktop\\Projects\\PhD_Project_MPE\\Data\\"
+OUTPUT_FIGURE_DIR <- "C:\\Users\\whitfield.h\\Desktop\\Projects\\PhD_Project_MPE\\Output\\PaperFigures\\Fig1_Landscape\\"
+
+SAVEDATA_DIR <- "/stornext/Home/data/allstaff/w/whitfield.h/PhD_Project_MPE/Data/"
+OUTPUT_FIGURE_DIR <- "/stornext/Home/data/allstaff/w/whitfield.h/PhD_Project_MPE/Output/PaperFigures/Fig1_Landscape/"
+source("/stornext/Home/data/allstaff/w/whitfield.h/PhD_Project_MPE/scripts/PaperFigures/MPEPaperFigures_Functions.R")
+
+
+######################################################################################################
+### 
+###  M A K E  P R E T T Y         (very important)                                                 
+###
+###   i.e. set plotting colours, params, themes etc.
+###
+
+#library(rcartocolor)
+#display_carto_all(type = 'diverging', colorblind_friendly = TRUE)
+
+### install.packages("devtools")    
+### devtools::install_github("kwstat/pals")   
+#library(pals)   
+#pal.bands(ocean.balance, ocean.delta, ocean.curl, main = "cmocean")   
+# https://github.com/kwstat/pals
+
+
+
+### ---- Make colour scheme as dictionary
+
+# https://lospec.com/palette-list/vinik24
+
+
+
+Colour_values <- c("#9e5476", "#d18b79",  "#70a18f",
+                   "#e7ebbc",
+                   "#8bbde6", "#6074ab", 
+                   "grey")
+
+names(Colour_values) <- c("Malignant", "Mesothelial",  "Myeloid",  
+                          "B_cells",
+                          "NK_cells", "T_cells",
+                          "Unassigned")
+
+Patients <- c("BCB90","BCB139", "BCB114", "BCB112", "BCB21",  "BCB66",  "BCB20")
+Colour_values_PatientID <- gg_color_hue(length(Patients))
+names(Colour_values_PatientID) <- Patients
+
+HPCA_Colour_values <- c()
+HPCA_Colour_values[c("Endothelial_cells", "Epithelial_cells", "Keratinocytes", 
+                     "Neurons", "Astrocyte", "Neuroepithelial_cell", "Hepatocytes")] <- Colour_values["Malignant"]
+HPCA_Colour_values[c("Fibroblasts", "Chondrocytes", "Smooth_muscle_cells")] <- Colour_values["Mesothelial"]
+HPCA_Colour_values["StemCell"] <- "#A58AFF" 
+HPCA_Colour_values[c("BM & Prog.",  "CMP", "MEP", "GMP", "Monocyte", "Platelets",
+                     "Erythroblast",  "HSC_-G-CSF", "HSC_CD34+", "Osteoblasts")] <- Colour_values["BloodProg"]
+HPCA_Colour_values[c("Macrophage", "BM", "Monocyte", "DC", "Pro-Myelocyte", "Myelocyte", "Neutrophils")] <- Colour_values["Myeloid"]
+HPCA_Colour_values["NK_cell"] <- Colour_values["NK_cells"]
+HPCA_Colour_values["T_cells"] <- Colour_values["T_cells"]
+HPCA_Colour_values["Gametocytes"] <- "grey"
+HPCA_Colour_values["B_cell"] <- Colour_values["B_cells"]
+
+library('unikn')   
+#seecol("all", n = 14)
+paired_patient <- seecol("pal_unikn_pair", n = 14)
+nonpaired_patient <- seecol("pal_unikn_pref", n = 14)
+Colour_values_PatientID <- c()
+
+Colour_values_PatientID["BCB66"] = paired_patient[[5]]
+Colour_values_PatientID["BCB66_E"] = paired_patient[[6]]
+Colour_values_PatientID["BCB20"] = paired_patient[[7]]
+Colour_values_PatientID["BCB20_E"] = paired_patient[[8]]
+Colour_values_PatientID["BCB21"] = paired_patient[[11]]
+Colour_values_PatientID["BCB21_E"] = paired_patient[[12]]
+
+Colour_values_PatientID["BCB112"] = paired_patient[[13]]
+Colour_values_PatientID["BCB139"] = paired_patient[[9]] ##?
+
+Colour_values_PatientID["BCB90"] = paired_patient[[3]]
+Colour_values_PatientID["BCB114"] = nonpaired_patient[[9]] ##?
+
+dev.off()
+
+
+##### ----- Make Themes ----- #####
+
+rl=1.1
+
+PlainBar_theme <- theme(legend.text = element_text(size = rel(rl)*1.3),
+                        legend.title = element_text(size = rel(rl)*1.6, face = 'bold'),
+                        legend.position = 'bottom',
+                        panel.border = element_rect(colour = NA),
+                        panel.grid.minor = element_blank(),
+                        panel.grid.major = element_blank(),
+                        axis.text.y = element_blank(), axis.text.x = element_blank(), 
+                        axis.line.y = element_blank(),axis.line.x = element_blank(),
+                        axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+                        axis.title.y =element_blank(),  axis.title.x=element_blank(),
+                        legend.spacing = unit(0.1, 'cm'),
+                        legend.margin=margin(0,0,0,0),legend.box.spacing= unit(0, 'cm'),
+                        legend.box.margin=margin(-5,-5,-5,-5))
+
+SimpleStackedBarchart_theme <- theme_bw()+theme(legend.text = element_text(size = rel(rl)),
+                                                legend.title = element_text(size = rel(rl), face = 'bold'),
+                                                legend.position = 'top',
+                                                # panel.border = element_rect(colour = NA),
+                                                #  panel.grid.minor = element_blank(),
+                                                #  panel.grid.major = element_blank(),
+                                                axis.text.y =  element_text(size = rel(rl), face = 'bold'), 
+                                                # axis.text.x = element_blank(), 
+                                                axis.line.y = element_blank(),axis.line.x = element_blank(),
+                                                axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+                                                axis.title.y =element_text(margin = margin(t = 0, r = 20, b = 0, l = 0), size = rel(rl)*1.2),  
+                                                axis.title.x=element_blank(),
+                                                legend.spacing = unit(0.05, 'cm'),  legend.spacing.x = unit(0.12, 'cm'), 
+                                                #   legend.margin=margin(0,0,0,-15),
+                                                legend.box.spacing= unit(0.1, 'cm'),
+                                                legend.box.margin=margin(-5,-5,-2,0))
+
+
+
+######################################################################################################
+### 
+###  L O A D  D A T A                                               
+###
+###   
+###
+
+Epithelial_Markers <-  c("CLDN4", "IMP3", "MUC1", "CDH1", "CEACAM5", "SCGB2A2", "CLDN3", "CLDN7")
+Mesothelial_Markers <- c("CALB2",  "WT1", "UPK3B",  "CDH2", "COL1A2", "S100A4", "MSLN") # CALD1 +++ UPK3B
+
+#### ---- Load Mega BCB ----- #####
+
+load(file=paste(SAVEDATA_DIR,"Mega_BCB_sce.Rdata", sep="")) # Mega_BCB_sce
+Mega_BCB_sce$CellType_refined <- replace(Mega_BCB_sce$CellType_refined,
+                                         Mega_BCB_sce$CellType_refined == "BloodProg", "Myeloid")
+
+Mega_BCB_sce$CellType <- replace(Mega_BCB_sce$CellType,
+                                         Mega_BCB_sce$CellType == "BloodProg", "Myeloid")
+
+
+load(file=paste(SAVEDATA_DIR, "MPE_BCB_lst.Rdata", sep="")) # BCB_lst
+load(file=paste(SAVEDATA_DIR,"Mega_BCB_DGE.Rdata", sep="")) # Mega_BCB_DGE
+
+### --- Get cell numbers
+sum(unlist(lapply(BCB_lst[names(BCB_lst)[grepl("_E", names(BCB_lst))]], function(x) {ncol(x)})))
+sum(unlist(lapply(BCB_lst[names(BCB_lst)[!(grepl("_E", names(BCB_lst)))]], function(x) {ncol(x)})))
+
+##### ---- Subtypes
+## ER+/PR+/HER2-: BCB90 and BCB139 (weak positives)
+## ER+/PR-/HER2-: BCB114, BCB20 and BCB21
+## ER-/PR-/HER2-: BCB66 and BCB112
+
+Subtypes_dict <- c("ER+/PR+/HER2-", "ER+/PR+/HER2-", "ER+/PR-/HER2-", "ER+/PR-/HER2-", "ER+/PR-/HER2-", "ER-/PR-/HER2-", "ER-/PR-/HER2-")
+names(Subtypes_dict) <- c("BCB90", "BCB139", "BCB114", "BCB20", "BCB21", "BCB66", "BCB112")
+
+Mega_BCB_sce$SubType <- as.vector(Subtypes_dict[Mega_BCB_sce$PatientID])
+Mega_BCB_sce$SeqRun <- as.vector(unlist(lapply(BCB_lst, function(x) {metadata(x)$SeqRun}))[Mega_BCB_sce$PatientID])
+Mega_BCB_sce$SeqVersion <-as.vector(unlist(lapply(BCB_lst, function(x) {metadata(x)$SeqVersion}))[Mega_BCB_sce$PatientID]) 
+
+#### ---- Load RPKM/CPM data ----- #####
+
+MegaBCB_logRPKM <- Mega_BCB_DGE$logRPKM
+MegaBCB_logCPM <- Mega_BCB_DGE$logCPM
+
+#### ---- Calculate Log TPM ----- #####
+load(file = paste0(SAVEDATA_DIR,"gene_lengths_HTSeq_gencodev24.Rdata")) # gene_lengths
+idx <- match(rownames(Mega_BCB_sce),gene_lengths$gene_name)
+gene_lengths <- gene_lengths[idx[!(is.na(idx))],]
+BCB_TPM <- calculateTPM(Mega_BCB_sce[!(rownames(Mega_BCB_sce) %in% setdiff(rownames(Mega_BCB_sce),gene_lengths$gene_name)),], 
+                        lengths=gene_lengths$gene_length, size_factors=Mega_BCB_sce$ConvSizeFact)
+
+save_path <- paste0(OUTPUT_FIGURE_DIR, "CorrHeatmap_PB_TPM.png", "")
+
+#CorrHeatmap_PB_TPM(Mega_BCB_DGE, save_path, 
+#                   samples_to_keep=names(table(Mega_BCB_sce$PB_heatmap_cluster)[table(Mega_BCB_sce$PB_heatmap_cluster)>100]), 
+#                   cluster =TRUE, RowSide="CellType",
+#                   Colour_values=,
+#                   GENE_LENGTH_DIR=paste0(SAVEDATA_DIR,"gene_lengths_HTSeq_gencodev24.Rdata"))
+
+##### ----- Pseudo-bulk across cell types
+PB_perCellType <- CellType_PB(Mega_BCB_sce, cpm_threshold=0.5, sample_threshold=0.1)
+
+CorrHeatmap_PB_TPM(PB_perCellType, paste0(OUTPUT_FIGURE_DIR, "CorrHeatmap_PB_perCellType_TPM.png", ""), 
+                   cluster =TRUE, pal="YlGnBu",
+                   GENE_LENGTH_DIR=paste0(SAVEDATA_DIR,"gene_lengths_HTSeq_gencodev24.Rdata"))
+
+
+######################################################################################################
+### 
+###  F I G U R E  1 A --   H E A T M A P                                                         
+###
+
+##### ----- DERIVE GENES FOR HEATMAP
+
+### --- Get SingleR genes per celltype
+CellType_genes <- LoadDEgenes_perCelltype(SAVEDATA_DIR)
+
+
+##### ---- See what is actually upregulated in each cell type
+X <- Mega_BCB_sce[,!(Mega_BCB_sce$CellType_refined == "Unassigned")]
+X_trained <- trainSingleR(ref=X,labels=X$CellType_refined, assay.type = "logcounts")
+
+iList <- list()
+for (iLabel in unique(names(X_trained$search$extra))){
+  iList[[iLabel]] <- unique(unlist(X_trained$search$extra[[iLabel]]))
+}
+
+
+Heatmap_genes <- list()
+Heatmap_genes$T_cells <- intersect(iList$T_cells, CellType_genes$T_cells)
+Heatmap_genes$NK_cells <- intersect(iList$NK_cells, CellType_genes$NK_cells)
+Heatmap_genes$B_cells <- intersect(iList$B_cells, CellType_genes$B_cells)
+Heatmap_genes$Myeloid_cells <- intersect(iList$Myeloid, CellType_genes$Myeloid_cells)
+Heatmap_genes$BloodProg <- intersect(iList$BloodProg, CellType_genes$Blood_BMProgen_cells)
+Heatmap_genes$Mesothelial <- intersect(iList$Mesothelial, CellType_genes$Mesothelial)
+Heatmap_genes$Malignant <- intersect(iList$Malignant, CellType_genes$Malignant)
+
+CellType_genes_lst <- as.vector(unlist(Heatmap_genes))
+
+##### ---- See what is actually upregulated in each cell type -- V2
+
+
+
+X <- Mega_BCB_sce[,!(Mega_BCB_sce$CellType_refined == "Unassigned")]
+Y <- X[rownames(X)[!(grepl("RPL|MT|RP", rownames(X)))],]
+Y <- Y[as.vector(rowSums(counts(Y))>0),]
+Y_trained <- trainSingleR(ref=Y,labels=Y$CellType_refined, assay.type = "logcounts", de.method="wilcox")
+
+
+jList <- list()
+for (jLabel in unique(names(Y_trained$search$extra))){
+  jList[[jLabel]] <- unique(unlist(Y_trained$search$extra[[jLabel]]))
+}
+
+Heatmap_genes_V2 <- c(setdiff(jList$T_cells, jList$NK_cells), #T cells
+                      intersect(jList$T_cells, jList$NK_cells), ## Overlap
+                      setdiff(jList$NK_cells, jList$T_cells), ## NK cells
+                      
+                      setdiff(intersect(jList$Myeloid, CellType_genes$Myeloid_cells), jList$Malignant),
+                      setdiff(jList$Myeloid, jList$B_cells), ## Myeloid
+                      intersect(jList$Myeloid, jList$B_cells), ## Myeloid
+                      setdiff(jList$B_cells, jList$BloodProg), # B cells
+                      intersect(jList$B_cells, jList$BloodProg), ## Overlap
+                      setdiff(jList$BloodProg, jList$B_cells), ## Blood prog
+                      
+                      intersect(jList$Mesothelial, jList$BloodProg),
+                      
+                      setdiff(jList$Mesothelial, jList$Malignant),"DES","MSLN","WT1", "CDH2",  ## Mesothelial
+                      "VIM", "COL1A1", "COL6A2", "KRT19", ## based on  setdiff(Heatmap_genes$Mesothelial, jList$Mesothelial)
+                      intersect(jList$Mesothelial, jList$Malignant), "CDH1","CLDN4", "CLDN7",
+                   setdiff(jList$Malignant, jList$Mesothelial) ## Malignant
+                      )
+remove <- c("EEF1A1", "EEF1B2", "TPT1", "PTMA", "UBA52", "NACA", "FAU", "GNB2L1")
+Heatmap_genes_V2 <- Heatmap_genes_V2[!(Heatmap_genes_V2 %in% remove)]
+CellType_genes_lst <- Heatmap_genes_V2 
+
+save_path <- paste0(OUTPUT_FIGURE_DIR, "SingleRgenes_Heatmap.png", "")
+PlotTPMHeatmap(BCB_TPM,Mega_BCB_sce, Heatmap_genes_V2, save_path,  scale = "Genes",
+               cluster_genes =TRUE, cluster_samples=FALSE)
+
+
+
+### Prep data
+HEATMAP_BCB <- Mega_BCB_sce[rownames(Mega_BCB_sce) %in% CellType_genes_lst,]
+AvLogcounts <- c()
+for (i in unique(Mega_BCB_sce$PB_heatmap_cluster)){
+  AvLogcounts[[i]] <- calculateAverage(HEATMAP_BCB[,HEATMAP_BCB$PB_heatmap_cluster == i], exprs_values="logcounts")
+}
+
+AvLogcounts <- as.data.frame(AvLogcounts)
+
+
+
+
+
+##### ---- PLOT HEATMAP
+
+PseudoBulk_samples_to_keep <- names(table(Mega_BCB_sce$PB_heatmap_cluster)[table(Mega_BCB_sce$PB_heatmap_cluster)>100])
+Bcells_to_include <- names(table(Mega_BCB_sce$PB_heatmap_cluster[grepl("B_cells", Mega_BCB_sce$PB_heatmap_cluster)])[table( Mega_BCB_sce$PB_heatmap_cluster[grepl("B_cells", Mega_BCB_sce$PB_heatmap_cluster)])>40])
+PseudoBulk_samples_to_keep <- c(PseudoBulk_samples_to_keep, Bcells_to_include)
+MegaBCB_logCPM <- MegaBCB_logCPM[,colnames(MegaBCB_logCPM) %in% PseudoBulk_samples_to_keep]
+
+
+
+
+### Plot SingleR genes
+#ColourBy_cell <- colnames(AvLogcounts)
+#save_path <- paste0(OUTPUT_FIGURE_DIR, "SingleRgenes_Heatmap.png", "")
+#PlotPseudoBulkHeatmap(AvLogcounts, CellType_genes_lst, ColourBy_cell, save_path, 
+#                      LIM = Limits, COLOUR_vector = Colours, NA_COL= Colours[length(Colours)/2], scale = "Genes")
+
+
+######################################################################################################
+### 
+###  F I G U R E  1 B/C -- Cell Types                                                        
+###
+
+
+
+##### --------------------- B) Mega-tSNE ------------------
+
+
+###-------- By celltype annotation
+
+
+rl=1.1
+Mega_BCB_tSNE <- plotReducedDim(Mega_BCB_sce, dimred="TSNE", colour_by="CellType_refined", point_alpha=0.8, point_size=1.)+theme_bw()+
+  scale_fill_manual(values=Colour_values)+
+  scale_colour_manual(values=Colour_values)+
+  theme(legend.text = element_text(size = rel(rl)*1.1),
+         legend.title = element_text(size = rel(rl)*1.3, face = 'bold'),
+         legend.position = 'bottom',panel.border = element_rect(colour = NA), legend.text.align=0.5,
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        axis.text.y = element_blank(), axis.text.x = element_blank(), 
+        axis.line.y = element_blank(),axis.line.x = element_blank(),
+        axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+        axis.title.y =element_blank(),  axis.title.x=element_blank(),legend.box.margin=margin(0,0,0,0),
+        legend.spacing = unit(0.1, 'cm'))+ labs(fill = "Cell Type") 
+
+#Mega_BCB_tSNE$layers[[1]]$aes_params$colour = NULL
+#Mega_BCB_tSNE$layers[[1]]$mapping$`colour` <- Mega_BCB_tSNE$layers[[1]]$mapping$`fill`
+#Mega_BCB_tSNE <- Mega_BCB_tSNE + guides(fill=guide_legend(nrow=3,byrow=TRUE, override.aes = list(size=4)), color = FALSE)
+Mega_BCB_tSNE <- Mega_BCB_tSNE+theme(legend.position = "none")
+png(paste0(OUTPUT_FIGURE_DIR, "Fig1b_MegatSNE_refined.png", ""),width = 2000, height = 2000, res=200)  #units="in", res=1000
+Mega_BCB_tSNE
+dev.off()
+
+
+rl=1.1
+Mega_BCB_tSNE <- plotReducedDim(Mega_BCB_sce, dimred="TSNE", colour_by="CellType", point_alpha=0.9, point_size=1.7)+theme_bw()+
+  scale_fill_manual(values=Colour_values)+
+  scale_colour_manual(values=Colour_values)+
+  theme(legend.text = element_text(size = rel(rl)*1.1),
+        legend.title = element_text(size = rel(rl)*1.3, face = 'bold'),
+        legend.position = 'bottom',panel.border = element_rect(colour = NA), legend.text.align=0.5,
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        axis.text.y = element_blank(), axis.text.x = element_blank(), 
+        axis.line.y = element_blank(),axis.line.x = element_blank(),
+        axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+        axis.title.y =element_blank(),  axis.title.x=element_blank(),legend.box.margin=margin(0,0,0,0),
+        legend.spacing = unit(0.1, 'cm'))+ labs(fill = "Cell Type") 
+
+Mega_BCB_tSNE$layers[[1]]$aes_params$colour = NULL
+Mega_BCB_tSNE$layers[[1]]$mapping$`colour` <- Mega_BCB_tSNE$layers[[1]]$mapping$`fill`
+Mega_BCB_tSNE <- Mega_BCB_tSNE + guides(fill=guide_legend(nrow=3,byrow=TRUE, override.aes = list(size=4)), color = FALSE)
+
+
+
+png(paste0(OUTPUT_FIGURE_DIR, "Fig1b_MegatSNE.png", ""),width = 2000, height = 2000, res=200)  #units="in", res=1000
+Mega_BCB_tSNE
+dev.off()
+
+
+##### ----------- C) Plot overall cell type proportions ------------------
+
+### --- Get proportions
+
+CellType_Props <- GetProps(Mega_BCB_sce, label="CellType_refined")
+CellType_Props$CellType <- rownames(CellType_Props)
+CellType_Props$Sample <- rep("AllPatients", length(rownames(CellType_Props)))
+CellType_Props <- CellType_Props[,!(colnames(CellType_Props) == "Freq")]
+CellType_Props <- CellType_Props[order(-CellType_Props$Proportion),]
+CellType_Props$CellType <- factor(CellType_Props$CellType, levels=rev(unique(CellType_Props$CellType)))
+
+PropBar <- ggplot(CellType_Props, aes(x = Sample, y=Proportion, fill=CellType)) + geom_bar(position="dodge", stat="identity") + 
+  geom_bar(stat = "identity")+xlab("\nSample") +ylab("\nLabel Proportion") +
+  scale_fill_manual(values=Colour_values, breaks=CellType_Props$CellType)+ coord_flip()+theme_bw()+scale_y_continuous(expand = c(0, 0), limits = c(0,100))+
+  PlainBar_theme+ labs(fill = "Cell Type")+
+  theme(legend.text = element_text(size = rel(rl)*1.3), legend.text.align = 0.5, legend.title.align = 0.5, legend.spacing.x = unit(0.2, 'cm'),
+        legend.box.spacing= unit(0.1, 'cm'))
+
+
+
+###-------- Combine MegatSNE and proportions barchart
+
+legend <- cowplot::get_legend(PropBar)
+
+
+png(paste0(OUTPUT_FIGURE_DIR, "Fig1bandc.png", ""), width = 1700, height = 1700, res=100)
+grid.arrange(grobs=list(Mega_BCB_tSNE+theme(legend.position = "none", plot.margin=unit(c(1,1,-0.6,1), "cm")), 
+                        PropBar+theme(plot.margin=unit(c(-0.6,1,1,1), "cm"))),
+             ncol=1, nrow=2, 
+             widths = 1, heights=c(7, 1))
+dev.off()
+
+png(paste0(OUTPUT_FIGURE_DIR, "Fig1c.png", ""), width=700, height=700)
+PropBar
+dev.off()
+
+
+##### ----------- OTHER TSNEs 
+
+###-------- By patient
+
+
+
+#Mega_BCB_tSNE_PatientID <- plotReducedDim(Mega_BCB_sce, dimred="TSNE", colour_by="PatientID")+scale_fill_manual(values=Colour_values_PatientID)
+
+
+rl=1.1
+Mega_BCB_tSNE_PatientID <- plotReducedDim(Mega_BCB_sce, dimred="TSNE", colour_by="PatientID", point_alpha=0.9, point_size=1.3)+theme_bw()+
+  scale_fill_manual(values=Colour_values_PatientID)+
+  scale_colour_manual(values=Colour_values_PatientID)+
+  theme(legend.text = element_text(size = rel(rl)*1.1),
+        legend.title = element_text(size = rel(rl)*1.3, face = 'bold'),
+        legend.position = 'bottom',panel.border = element_rect(colour = NA), legend.text.align=0.5,
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        axis.text.y = element_blank(), axis.text.x = element_blank(), 
+        axis.line.y = element_blank(),axis.line.x = element_blank(),
+        axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+        axis.title.y =element_blank(),  axis.title.x=element_blank(),legend.box.margin=margin(-45,0,45,0),
+        legend.spacing = unit(0, 'cm'))+ labs(fill = "Cell Type")+
+  guides(fill=guide_legend(nrow=2,byrow=TRUE, override.aes = list(size=4)), color = guide_legend(override.aes = list(size = 4)))
+
+#Mega_BCB_tSNE_PatientID$layers[[1]]$aes_params$colour = NULL
+#Mega_BCB_tSNE_PatientID$layers[[1]]$mapping$`colour` <- Mega_BCB_tSNE_PatientID$layers[[1]]$mapping$`fill`
+#Mega_BCB_tSNE_PatientID <- Mega_BCB_tSNE_PatientID + guides(fill=guide_legend(nrow=3,byrow=TRUE, override.aes = list(size=4)), color = FALSE)
+
+png(paste0(OUTPUT_FIGURE_DIR, "MegatSNE_AllPatients_ByPatient.png", ""),width = 2000, height = 2000, res=200)
+Mega_BCB_tSNE_PatientID
+dev.off()
+
+
+
+#### ---- By HPCA
+
+## Cluster numb. 2 (BCB66) is weird...
+
+rl=1.1
+Mega_BCB_tSNE <- plotReducedDim(Mega_BCB_sce, dimred="TSNE", colour_by="CellAtlas_labels", point_alpha=0.7, point_size=3)+theme_bw()+
+  scale_fill_manual(values=HPCA_Colour_values)+
+  theme(legend.text = element_text(size = rel(rl)*1.1),
+        legend.title = element_text(size = rel(rl)*1.3, face = 'bold'),
+        legend.position = 'bottom',panel.border = element_rect(colour = NA), legend.text.align=0.5,
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        axis.text.y = element_blank(), axis.text.x = element_blank(), 
+        axis.line.y = element_blank(),axis.line.x = element_blank(),
+        axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+        axis.title.y =element_blank(),  axis.title.x=element_blank(),legend.box.margin=margin(-45,0,45,0),
+        legend.spacing = unit(0.1, 'cm'))+ labs(fill = "Cell Type")+
+  guides(fill=guide_legend(nrow=3,byrow=TRUE, override.aes = list(size=4)), color = guide_legend(override.aes = list(size = 4)))
+Mega_BCB_tSNE$layers[[1]]$aes_params$stroke = 0
+Mega_BCB_tSNE$layers[[1]]$geom_params$shape = 19
+Mega_BCB_tSNE$layers[[1]]$geom_params$stroke = 0
+
+png(paste0(OUTPUT_FIGURE_DIR, "Fig1b_MegatSNE_ByHPCA.png", ""),width = 1100, height = 1100)  #units="in", res=1000
+Mega_BCB_tSNE
+dev.off()
+
+
+
+##### ----------- D) Per-Sample bar chart, by patient and subtype ------------------
+
+#library(gdata)
+
+CellType_Ordering <- c("Malignant", "T_cells", "Myeloid", "NK_cells", "Mesothelial", "Unassigned", "B_cells", "BloodProg")
+
+### --  Get proportions
+
+CellType_Props <- GetProps_perPatient(Mega_BCB_sce, label="CellType_refined")
+CellType_Props$CellType <- rownames(CellType_Props)
+CellType_Props <- CellType_Props[order(factor(CellType_Props$CellType, levels=rev(unique(CellType_Ordering)))),]
+CellType_Props <- reshape2::melt(CellType_Props, id.vars="CellType", value.name="Proportion", variable.name="PatientID")
+
+## Add subtype info
+CellType_Props$Subtype <- as.vector(Subtypes_dict[ as.vector(CellType_Props$PatientID)])
+
+## Add cell number info
+#SampleCols <- c("BCB90", "BCB139", "BCB114", "BCB20", "BCB21", "BCB112", "BCB66")
+SampleCols <- c("BCB90", "BCB114","BCB21", "BCB20", "BCB139",  "BCB112", "BCB66")
+SampleNumbs_str_dict <- paste0(SampleCols, " \n (n = ",
+                           unlist(lapply(SampleCols, function(x) {ncol(Mega_BCB_sce[,Mega_BCB_sce$PatientID == x])})), ")", "")
+names(SampleNumbs_str_dict) <- SampleCols
+
+SampleNumbs_dict <- unlist(lapply(SampleCols, function(x)  {ncol(Mega_BCB_sce[,Mega_BCB_sce$PatientID == x])}))
+names(SampleNumbs_dict) <- SampleCols
+
+CellType_Props$CellNumb_str <- as.vector(SampleNumbs_str_dict[as.vector(CellType_Props$PatientID)])
+CellType_Props$CellNumb <- as.vector(SampleNumbs_dict[as.vector(CellType_Props$PatientID)])
+
+CellType_Props$CellType <- factor(CellType_Props$CellType, levels=rev(CellType_Ordering))
+CellType_Props$PatientID <- factor(CellType_Props$PatientID, levels=SampleCols)
+
+### ---- Plot all subtypes
+rl=1.1
+
+PropBar_pp <- ggplot(CellType_Props, aes(x=PatientID, y=Proportion, fill=CellType)) + 
+  geom_bar(stat = "identity", position = "stack", width=0.95) +
+  xlab("\nPatientID") +ylab("\nLabel Proportion") +
+  scale_fill_manual(values=Colour_values, breaks=CellType_Ordering)+theme_bw()+  coord_flip()+
+  scale_y_discrete(limits =CellType_Ordering)+
+  # scale_x_continuous(limits=c(0,100))+
+  PlainBar_theme+ labs(fill = "Cell Type")+
+  theme(axis.title.y =element_blank(), axis.text.y  = element_text(angle=90, hjust=0.5, size = rel(rl)), legend.position = "top",
+        legend.text = element_text(size = rel(rl)*1.3), legend.text.align = 0.5, legend.title.align = 0.5, legend.spacing.x = unit(0.2, 'cm'),
+        legend.box.spacing= unit(0.1, 'cm'))
+
+
+png(paste0(OUTPUT_FIGURE_DIR, "Fig1d_PropBar_pp.png", ""), width=850, height=750)
+PropBar_pp
+dev.off()
+
+#### ---- Cell numbers per patient
+
+## Get cell numbs 
+CellType_Numb <- CellType_Props[!(duplicated(CellType_Props$PatientID)),colnames(CellType_Props) %in% c("PatientID", "CellNumb")]
+CellType_Numb$CellNumb <- as.numeric(CellType_Numb$CellNumb)
+
+cellNumb_bar <- ggplot(data=CellType_Props, aes(x=PatientID, y=CellNumb)) + 
+  geom_bar(stat="identity", position="dodge", width=0.93,  fill="dimgrey")+coord_flip()+theme_bw()+PlainBar_theme
+
+
+### Combine pltots
+png(paste0(OUTPUT_FIGURE_DIR, "Fig1d_PropBar_pp_wCellNumb.png", ""), width=2500, height=2000, res=250)
+grid.arrange(grobs=list(PropBar_pp+theme(legend.position = "none",plot.margin=unit(c(0,0,0.5,0), "cm"),
+                                         axis.title.y =element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank()), 
+                        cellNumb_bar+
+                          theme(axis.title.y =element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank(), 
+                                           axis.ticks.x=element_line(), axis.line.x=element_line(), 
+                                axis.text.x=element_text(size = rel(rl)*1.6, hjust=0.8),
+                                plot.margin=unit(c(0,0,0,0), "cm"))+
+                        scale_y_continuous(labels=c("0","5k", "10k", "15k"), limits=c(0, 15000),breaks = c(0, 5000, 10000, 15000))),
+             ncol=2, nrow=1, 
+             widths = c(5,1))
+dev.off()
+
+
+
+
+
+### ---- Plot per subtype
+
+SubtypeA <- ggplot(Dadataz[Dadataz$Subtype == "ER+/PR+/HER2-",], aes(x = variable, y = value, fill = CellType)) + 
+  
+  ## Make stacked barchart
+  geom_bar(position="stack", stat="identity") +  geom_bar(stat = "identity", width=1, colour="dimgrey")+
+  
+  ## Labels
+  xlab("\nSample") +ylab("\nCell Type Proportion")+labs(fill = "Cell Type")+
+  
+  ## Make pretty
+  scale_fill_manual(values=CellAtlas_Colours, breaks=as.vector(unique(Dadataz$CellType)))+coord_flip()+SimpleStackedBarchart_theme+
+  theme(axis.title.y =element_blank(), axis.text.y  = element_text(angle=90, hjust=0.5, size = rel(rl)), 
+        legend.text.align = 0.5, legend.text =element_text(angle=90, size=rel(rl)*1, vjust=1), 
+        legend.title =element_text(angle=90, size=rel(rl)*1.3, vjust=1), legend.title.align = 0.5,
+        legend.spacing = unit(0.1, 'cm'), legend.spacing.x = unit(0.2, 'cm'), legend.box.spacing= unit(0.2, 'cm'), 
+        legend.box.margin=margin(-20,-5,-20,-5), legend.key.height = unit(0.05, "cm"))+
+  
+  ## Expand bars
+  scale_x_discrete(expand = c(0, 0))+scale_y_discrete(expand = c(0, 0))+
+  
+  ## Make legend wrap around
+  guides(fill=guide_legend(nrow=1,byrow=TRUE, keywidth=1, override.aes = list(size=1)))
+
+
+SubtypeB <- ggplot(Dadataz[Dadataz$Subtype == "ER+/PR-/HER2-",], aes(x = variable, y = value, fill = CellType)) + 
+  geom_bar(position="stack", stat="identity") + geom_bar(stat = "identity", width=1, colour="dimgrey")+
+  xlab("\nSample") +ylab("\nCell Type Proportion") +labs(fill = "Cell Type")+
+  scale_fill_manual(values=CellAtlas_Colours)+coord_flip()+SimpleStackedBarchart_theme+
+  scale_x_discrete(expand = c(0, 0))+scale_y_discrete(expand = c(0, 0))+guides(fill=guide_legend(nrow=2,byrow=TRUE))+
+  theme(legend.position = 'none', axis.title.y =element_blank(),  axis.text.y  = element_text(angle=90, hjust=0.5, size = rel(rl)))
+
+SubtypeC <- ggplot(Dadataz[Dadataz$Subtype == "ER-/PR-/HER2-",], aes(x = variable, y = value, fill = CellType)) + 
+  geom_bar(position="stack", stat="identity") +geom_bar(stat = "identity", width=1, colour="dimgrey")+
+  xlab("\nSample") +ylab("\nCell Type Proportion") +labs(fill = "Cell Type")+
+  scale_fill_manual(values=CellAtlas_Colours)+coord_flip()+SimpleStackedBarchart_theme+
+  scale_x_discrete(expand = c(0, 0))+scale_y_discrete(expand = c(0, 0))+guides(fill=guide_legend(nrow=2,byrow=TRUE))+
+  theme(legend.position = 'none', axis.title.y =element_blank(),  axis.text.y  = element_text(angle=90, hjust=0.5, size = rel(rl)))
+
+
+##### ------ Add subtypes
+
+SubtypeDF <- data.frame(Subtype=unique(Subtypes), Proportion=c(1.95, 3.2, 2.15), Sample=rep("All", 3))
+
+SubtypeBar <- ggplot(SubtypeDF , aes(x = Sample , y = Proportion, fill=Subtype))+ geom_bar(position="dodge", stat="identity") + 
+  geom_bar(stat = "identity")+ scale_fill_manual(values=gg_color_hue(3))+theme_bw()+PlainBar_theme+ labs(fill = "Subtype")+
+  scale_y_continuous(expand = c(0, 0), sec.axis = dup_axis(breaks = c(0.5, 3, 5.7),labels = c("ER+/PR+/HER2-","ER+/PR-/HER2-","ER-/PR-/HER2-")))+
+  theme(legend.direction='vertical',  legend.position = 'none',
+        axis.text.y.right =element_text(margin = margin(t = 0, r = 0, b = 0, l = -50), size = rel(rl)*1.3, face = 'bold', angle = 90))
+
+
+
+##### ------ Plot 1d)
+
+## Subplot layout
+LayoutMat <- rbind(c(5,5),
+                   c(1,4),
+                   c(2,4),
+                    c(3,4))
+#blank <- grid.rect(gp=gpar(col="white"))
+
+#legend <- get_legend(SubtypeA)
+legend = gtable_filter(ggplotGrob(SubtypeA), "guide-box")
+legend[[1]][[1]][[1]][[1]]$heights = unit.c(unit(0.193302891933029, "cm"), unit(2.2, "cm"), unit(0, "cm"), unit(0.193302891933029, "cm"))
+
+
+
+MarginWidth = 0.1 # in units
+png(paste0(OUTPUT_FIGURE_DIR, "Fig1d_nonEnriched.png", ""), width=600, height=800)
+grid.arrange(grobs=list(
+          SubtypeA +theme(legend.position = 'none', axis.text.y =element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)), plot.margin=unit(c(0.1,0.1,MarginWidth,1), "cm")),  # t r b l
+            SubtypeB+theme(axis.text.y =element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)), plot.margin=unit(c(MarginWidth,0.1,MarginWidth,1), "cm")), 
+            SubtypeC+theme(axis.text.y =element_text(margin = margin(t = 0, r = 10, b = 0, l = 0)), plot.margin=unit(c(MarginWidth,0.1,1,1), "cm")),
+             SubtypeBar+theme(axis.text.y.right =element_text(margin = margin(t = 0, r = 0, b = 0, l = 0)),plot.margin=unit(c(0.1,0.5,0.9,0), "cm")), 
+                   legend),
+             widths = c(10, 2), heights=c(1, 2, 3, 2), layout_matrix=LayoutMat)
+dev.off()
+
+
+
+######################################################################################################
+### 
+###  E P I T H E L I A L  M A R K E R S                                                       
+###
+
+Marker_lst <- c()
+JollyHybrid <- c("ITGB4", "CD44")
+Epithelial_Markers <- c("EPCAM", "CLDN4", "CDH1", "CLDN3", "CLDN7", "SFN", "KRT8", "KRT19", "KRT81") # "CLDN3",  "CLDN7", "KRT81"
+Mesothelial_Markers <- c("DES", "CALB2",  "WT1", "TFRC",  "CDH2", "COL1A2", "CXCL12")# TFRC == CD71  + CDH2???  "CD44","VIM",
+
+
+Mamm_Progenitor <- c("Fstl1", "Sparc", "Tgfbr3", "Col14a1", "Lgals1", "Antxr1", "Axl", "Fbn1", "Palm", "St3gal2", "Aldh1a3", "Cd55",
+                     "Adamts2", "Lrp1", "Col5a1")
+
+GeneSigs_lst <- list(EPI=Tan_Genes_Epi, MES=Tan_Genes_Mes, STEM=toupper(Mamm_Progenitor))
+
+AvViolinPerCelltype <- function(iBCB, Marker_lst, colour_dict, SAVE_PATH){
+  ## Average across celltype
+  ### noooooooo CellAtlas_labels but ok for now yes
+  iBCB$Malignancy <- replace(iBCB$CellAtlas_labels, iBCB$CellAtlas_labels == "Epithelial_cells", "Malignant")
+  iBCB$Malignancy <- replace(iBCB$Malignancy, iBCB$Malignancy %in% c("Fibroblasts", "Smooth_muscle_cells", "Chondrocytes"), "Mesothelial")
+  iBCB$Malignancy <- replace(iBCB$Malignancy, !(iBCB$Malignancy %in% c("Malignant", "Mesothelial")), "Immune")
+  iBCB <- iBCB[rownames(iBCB) %in% Marker_lst,]
+  
+  ## Average across markers, per cell
+  X <- colMeans(logcounts(iBCB))
+  plot_df <- data.frame(AverageExpression=X, Cell=as.vector(iBCB$Malignancy))
+  
+  pp <- ggplot(plot_df, aes(x=Cell , y=AverageExpression, fill=Cell))+geom_violin(alpha=0.7, trim=FALSE, scale="width") + ylim(0, 4)+
+    scale_fill_manual(values=colour_dict)#scale="width"
+  
+  if (SAVE_PATH == FALSE){
+    print(pp)
+  } else{
+    png(SAVE_PATH, width=800, height=800)
+    print(pp)
+    dev.off()
+  }
+  
+}
+
+
+AvViolinPerSubtype <- function(iBCB, Marker_lst, colour_dict, SAVE_PATH){
+  ## Average across celltype
+  ### noooooooo CellAtlas_labels but ok for now yes
+  iBCB$Subtype <- replace(iBCB$PatientID, iBCB$PatientID %in% c("BCB112", "BCB66", "BCB66_E"), "TNBC")
+  iBCB$Subtype <- replace(iBCB$Subtype, iBCB$Subtype %in% c("BCB20", "BCB20_E", "BCB21", "BCB21_E", "BCB114"), "ER+/PR-")
+  iBCB$Subtype <- replace(iBCB$Subtype, iBCB$Subtype %in% c("BCB139", "BCB90"), "ER+/PR+")
+  iBCB <- iBCB[rownames(iBCB) %in% Marker_lst,]
+  
+  ## Average across markers, per cell
+  X <- colMeans(logcounts(iBCB))
+  plot_df <- data.frame(AverageExpression=X, Cell=as.vector(iBCB$Subtype))
+  
+  pp <- ggplot(plot_df, aes(x=Cell , y=AverageExpression, fill=Cell))+geom_violin(alpha=0.7, trim=FALSE, scale="width") + ylim(0, 4)+
+    scale_fill_manual(values=colour_dict)#scale="width"
+  
+  if (SAVE_PATH == FALSE){
+    print(pp)
+  } else{
+    png(SAVE_PATH, width=800, height=800)
+    print(pp)
+    dev.off()
+  }
+  
+}
+
+library(wesanderson)
+colour_dict <- as.vector(wes_palette(n=3, name="GrandBudapest2"))
+
+AvViolinPerCelltype(Mega_BCB_sce, c("EPCAM", "CLDN4", "CDH1", "CLDN3", "CLDN7", "SFN", "MUC1", "KRT81"), 
+                    colour_dict, SAVE_PATH=paste0(OUTPUT_FIGURE_DIR, "EpiMarkers_plsfixcelltyping.png",""))
+
+## Markers that both meso and epi expres
+AvViolinPerCelltype(Mega_BCB_sce, c("KRT8", "KRT19", "VIM", "CDH1", "CD44"), 
+                    colour_dict, SAVE_PATH=paste0(OUTPUT_FIGURE_DIR, "MesoEpiJointMarkers_plsfixcelltyping.png",""))
+
+## Markers that are supposed to be just meso
+AvViolinPerCelltype(Mega_BCB_sce, c("DES", "MSLN", "WT1", "CDH2", "CALB2", "CXCL12"), 
+                    colour_dict, SAVE_PATH=paste0(OUTPUT_FIGURE_DIR, "MesoMarkers_plsfixcelltyping.png",""))
+
+
+## EMT markers
+AvViolinPerCelltype(Mega_BCB_sce, c("CDH2", "VIM", "COL1A2", "MUC1"), 
+                    colour_dict, SAVE_PATH=paste0(OUTPUT_FIGURE_DIR, "EMTMarkers_plsfixcelltyping.png",""))
+## fibrogenesis also expresses some of these
+## i.e. https://www.frontiersin.org/articles/10.3389/fphar.2015.00113/full
+
+
+## Tan et al markers
+Tan_Genes_Epi <- LoadEPIGenes("Tan")
+Tan_Genes_Mes <- LoadMESGenes("Tan")
+
+AvViolinPerCelltype(Mega_BCB_sce, Tan_Genes_Epi, 
+                    colour_dict, SAVE_PATH=paste0(OUTPUT_FIGURE_DIR, "TanE_plsfixcelltyping.png",""))
+
+AvViolinPerCelltype(Mega_BCB_sce, Tan_Genes_Mes, 
+                    colour_dict, SAVE_PATH=paste0(OUTPUT_FIGURE_DIR, "TanM_plsfixcelltyping.png",""))
+
+## Meso cells with high EMT score -> express MMT specific markers?
+## EMT score minus MMT score?
+
+### --- TEST marker
+AvViolinPerCelltype(Mega_BCB_sce, c("DES"),colour_dict, SAVE_PATH=FALSE)
+X <- Mega_BCB_sce[,as.vector(logcounts(Mega_BCB_sce[rownames(Mega_BCB_sce)=="ROR1",])>0)]
+X <- Mega_BCB_sce[Mega_BCB_sce$CellAtlas_labels %n% c(),]
+AvViolinPerSubtype(X, c("ROR1"),colour_dict, SAVE_PATH=FALSE)
+
+X <- as.vector(logcounts(Mega_BCB_sce[rownames(Mega_BCB_sce)=="ROR1",]))
+
+Y <- replace(Mega_BCB_sce$CellAtlas_labels, Mega_BCB_sce$CellAtlas_labels == "Epithelial_cells", "Malignant (7.2% cells)")
+Y <- replace(Y, Y %in% c("Fibroblasts", "Smooth_muscle_cells", "Chondrocytes"), "Mesothelial (48% cells)")
+Y <- replace(Y, !(Y %in% c("Malignant (7.2% cells)", "Mesothelial (48% cells)")), "Other (0.5% cells)")
+
+EpiCellNumb <- 100*(sum(as.vector(as.vector(logcounts(Mega_BCB_sce[rownames(Mega_BCB_sce)=="ROR1",Mega_BCB_sce$CellAtlas_labels == "Epithelial_cells"]))>0))/length(as.vector(as.vector(logcounts(Mega_BCB_sce[rownames(Mega_BCB_sce)=="ROR1",Mega_BCB_sce$CellAtlas_labels == "Epithelial_cells"]))>0)))
+MesoCellNumb <- 100*(sum(as.vector(as.vector(logcounts(Mega_BCB_sce[rownames(Mega_BCB_sce)=="ROR1",Mega_BCB_sce$CellAtlas_labels %in% c("Fibroblasts", "Smooth_muscle_cells", "Chondrocytes")]))>0))/length(as.vector(as.vector(logcounts(Mega_BCB_sce[rownames(Mega_BCB_sce)=="ROR1",Mega_BCB_sce$CellAtlas_labels  %in% c("Fibroblasts", "Smooth_muscle_cells", "Chondrocytes")]))>0)))
+ImmuneCellNumb <- 100*(sum(as.vector(as.vector(logcounts(Mega_BCB_sce[rownames(Mega_BCB_sce)=="ROR1",!(Mega_BCB_sce$CellAtlas_labels  %in% c("Fibroblasts", "Smooth_muscle_cells", "Chondrocytes", "Epithelial_cells"))]))>0))/length(as.vector(as.vector(logcounts(Mega_BCB_sce[rownames(Mega_BCB_sce)=="ROR1",!(Mega_BCB_sce$CellAtlas_labels  %in% c("Fibroblasts", "Smooth_muscle_cells", "Chondrocytes", "Epithelial_cells"))]))>0)))
+
+Z <- Y
+Z <- replace(Z, Z=="Malignant", EpiCellNumb)
+Z <- replace(Z, Z=="Mesothelial", MesoCellNumb)
+Z <- replace(Z, Z=="Other", ImmuneCellNumb)
+Z <- as.numeric(Z)
+
+G <- rep("ROR1", length(X))
+
+DF <- data.frame(LogCounts=X, CellType=as.vector(Y), CellProportion=Z, ROR1=G)
+
+ggplot(DF, aes(x=CellType, y=LogCounts))+geom_point(alpha=0.6)+geom_dotplot(binaxis='y', stackdir='center', dotsize=.1)
+
+DF <- data.frame(LogCounts=X, CellType=as.vector(Y))
+ggplot(DF, aes(x=CellType, y=LogCounts, fill=CellType))+geom_violin(alpha=0.6, scale="width")+geom_dotplot(binwidth=0.1, binaxis='y', stackdir='center', dotsize=.1)+
+  scale_fill_manual(values=colour_dict)
+
+ggplot(DF, aes(x=CellType, y=LogCounts, fill=CellType))+geom_dotplot(binaxis='y', stackdir='center', dotsize=.5)+
+  scale_fill_manual(values=colour_dict)
+
+
+library(ggpubr)
+ggballoonplot(data=DF, x=ROR1, y=CellType, color = LogCounts, fill = "CellProportion")+
+  scale_fill_viridis_c(option = "C")
+
+
+AllSamplesFreq <- aggregate(.~  newrows, data =AllSamplesFreq, sum)
+
+
+
+
+
+######################################################################################################
+### 
+###  F I G U R E  1 D -- E P I T H E L I A L  H E A T M A P                                                         
+###
+
+
+
+### --- Load reference genes
+
+SCE_Epithelial_Genes <- LoadEPIGenes("MPE_derived")
+CAF_genes <- LoadEPIGenes("Tirosh_CAF")
+
+## Filter by expression
+x <- Mega_BCB_sce[rownames(Mega_BCB_sce) %in% SCE_Epithelial_Genes, ]
+SCE_Epithelial_Genes <- names(sort(rowSums(logcounts(x)[,grepl("Epithelial_cells", x$CellAtlas_labels)]), decreasing = TRUE)[1:30])
+
+## Filter by expression
+x <- MegaBCB_RPKM[rownames(MegaBCB_RPKM) %in% REF_Epithelial_Genes, ]
+REF_Epithelial_Genes <- names(sort(rowSums(x[,grepl("Epithelial_cells", colnames(x))]), decreasing = TRUE)[1:30])
+
+
+EpiMarkers <- c("CDH1", "CDH5", "ZO1", "CLDN1", "CLDN2", "CLDN3", "CLDN4", "CLDN7", "CLDN9", "CLDN10", "CLDN12", "CLDN15", "CLDN22", "CLDN23")
+# Epithelial and MyoEpithelial From Supplementary Table 2
+# https://sci-hub.tw/https://www.nature.com/articles/s41591-019-0750-6#Sec54
+
+
+
+MesothelialMarkers <- c("LRRN4", "UPK3B", "CD71", "MSLN", "WT1", "CDH2", "DES", "CALB2") # not in CAF list
+
+MesoCAF_genes <- c("TGFB1", "TGFB2", "EGF", "FGF1", "FGF2", "CCN2", 
+                   "VEGFA", "VEGFB", "VEGFC","VEGFD",
+                   "PDGFA", "PDGFB", "PDGFC","PDGFD",
+                   "IL6", "IL8", "IL1B","IL10",
+                   "WNT1", "WNT2", "WNT3","WNT3A", "WNT4", "WNT5A", "WNT5",
+                   "HGF", "TNF", "LOX",  "TIMP1",
+                   "MMP2", "MMP9", ## etc.
+                   "POSTN","FN1", "PTGES2") 
+
+
+##### ----------- Plot Expression Heatmap Across Cell Types ------------------
+
+
+
+##### ----- Plot heatmaps
+
+Limits <- c(-2, 2)
+
+#Colours <- ocean.curl(100)
+Colours <- brewer.blues(100)
+
+
+### Epithelial -- Thiery
+save_path <- paste0(OUTPUT_FIGURE_DIR, "TanGenes_Heatmap.png", "")
+PlotPseudoBulkHeatmap(MegaBCB_RPKM, genelist, ColourBy_cell, save_path, LIM = Limits, COLOUR_vector = Colours, scale = "Genes")
+
+
+### Epithelial -- Top upregulated from SingleR
+save_path <- paste0(OUTPUT_FIGURE_DIR, "EpithelialGenes_Heatmap.png", "")
+PlotPseudoBulkHeatmap(MegaBCB_RPKM, REF_Epithelial_Genes, ColourBy_cell, save_path, LIM = Limits, COLOUR_vector = Colours, scale = "Genes")
+
+save_path <- paste0(OUTPUT_FIGURE_DIR, "EpithelialMarkers_Heatmap.png", "")
+PlotPseudoBulkHeatmap(MegaBCB_RPKM, EpiMarkers , ColourBy_cell, save_path, LIM = Limits, COLOUR_vector = Colours, scale = "Genes")
+
+### CAFs
+save_path <- paste0(OUTPUT_FIGURE_DIR, "CAFgenes_Heatmap.png", "")
+PlotPseudoBulkHeatmap(MegaBCB_RPKM, CAF_genes, ColourBy_cell, save_path, LIM = Limits, COLOUR_vector = Colours, scale = "Genes")
+
+### Mesothelial
+save_path <- paste0(OUTPUT_FIGURE_DIR, "MesothelialGenes_Heatmap.png", "")
+PlotPseudoBulkHeatmap(MegaBCB_RPKM, MesothelialMarkers, ColourBy_cell, save_path, LIM = Limits, COLOUR_vector = Colours, scale = "Genes")
+
+### Mesothelial-Derived CAFs
+save_path <- paste0(OUTPUT_FIGURE_DIR, "MesothelialCAFgenes_Heatmap.png", "")
+PlotPseudoBulkHeatmap(MegaBCB_RPKM, MesoCAF_genes, ColourBy_cell, save_path, LIM = Limits, COLOUR_vector = Colours, scale = "Genes")
+
+
+### ???
+design_to_preserve_rep <- model.matrix( ~0 + Organ_rep + Clone_rep)
+BATCHCORRECTED_DATA_rep <- removeBatchEffect(cpm(DGE_Object_rep, log=TRUE, prior.count = 2), design = design_to_preserve_rep, 
+                                             batch=Mouse_rep)
+
+### if subsample
+#n_perSample = 200
+#Mega_BCB_SS <- Mega_BCB_sce[,Mega_BCB_sce$CellAtlas_labels %in% c("Stem Cell", "Fibroblasts", "Smooth Muscle", "Epithelial")] 
+#Mega_BCB_SS$Subset <- paste0(Mega_BCB_SS$PatientID, "_", Mega_BCB_SS$CellAtlas_labels)
+#to_keep <- names(table(Mega_BCB_SS$Subset)[table(Mega_BCB_SS$Subset) > n_perSample])
+#Mega_BCB_SS <- Mega_BCB_SS[,Mega_BCB_SS$Subset %in% to_keep]
+#SubSampledCells <- colData(Mega_BCB_SS) %>%  as.data.frame() %>% group_by(Subset) %>% dplyr::sample_n(n_perSample) %>% dplyr::pull(Barcode)
+
+#Mega_BCB_SS <- Mega_BCB_SS[,Mega_BCB_SS$Barcode %in% SubSampledCells]
+
+
+#ColourBy_cell <- "CellAtlas_labels"
+
+
+##### ----------- Split two big clusters of CAFs to see if different functions? ------------------
+
+### Ovarian cancer paper found distinct cell states
+# One subpopulation was immune-related genes such as 
+# - complement factors (C1QA/B/C and CFB)
+# - chemokines (CXCL1/2/10/12)
+# - cytokines (IL6 and IL10)
+
+## Boxplots across all cell types split by megatSNE clusters
+## inc. % of cells to express the gene
+# (or bar plot where the bars are ordered by % of cells that express the gene?)
+
+
+
+
+##### ----------- Boxplots of Mesothelial markers vs Cancer markers ------------------
+
+
+### Fix column names
+new_cols <- ConvertColumns(MegaBCB_logCPM, By="CellType")
+
+### Merge Cell Types
+new_cols <- replace(new_cols, new_cols%in% c("B_cell", "T_cells", "Monocyte", "Macrophage", "NK_cell"), "Immune")
+new_cols <- replace(new_cols, new_cols%in% c("Fibroblasts", "Smooth_muscle_cells", "Chondrocytes"), "Mesothelial")
+colnames(MegaBCB_logCPM) <- new_cols
+
+save_path <- paste0(OUTPUT_FIGURE_DIR, "MesothelialCAFgenes_Heatmap.png", "")
+BoxPlotperGene(MegaBCB_logCPM, MesothelialMarkers, colnames(MegaBCB_logCPM), save_path)
+
+
+
+
+
+######################################################################################################
+### 
+###  C O R R E L A T I O N  B/W  E + N O N                                                      
+###
+
+
+
+
+
+
+
+
+
+#### ---- Remove Data ----- #####
+
+rm(Mega_BCB_sce)
+rm(MegaBCB_logCPM)
+rm(BCB_sce_list)
+rm(legend)
+rm(Mega_BCB_tSNE)
+rm(Mega_BCB_tSNE_PatientID)
+rm(MegaBCB_RPKM)
+
+
+
+
+
+
+
+
+
+
+
+LabelsToExclude <- c("Astrocyte", "BM & Prog.", "CMP", "Endothelial_cells", "Erythroblast", "Gametocytes", "GMP", "Hepatocytes", "HSC_-G-CSF",
+                     "HSC_CD34+", "Keratinocytes", "MEP", "Neuroepithelial_cell", "Neurons", "Osteoblasts", "Pro-Myelocyte", "DC", "Pro-B_cell_CD34+", "Neutrophils")
+AllSamplesFreq_filt <- AllSamplesFreq[!(AllSamplesFreq$Label %in% LabelsToExclude),]
+
+### Give each label a colour
+AllSamplesFreq_filt$Colour <- gg_color_hue(length(rownames(AllSamplesFreq_filt)))
+
+## expand back stem cells
+stem_c <- AllSamplesFreq_filt[rownames(AllSamplesFreq_filt) == "Stem_cell",]$Colour
+stemcell_df <- data.frame(Label=c("Embryonic_stem_cells", "iPS_cells", "MSC", "Tissue_stem_cells"), Colour = c(stem_c,stem_c,stem_c,stem_c),
+                          row.names=c("Embryonic_stem_cells", "iPS_cells", "MSC", "Tissue_stem_cells"))
+AllSamplesFreq_filt$Label <- rownames(AllSamplesFreq_filt)
+Colour_dict_filt <- AllSamplesFreq_filt[, colnames(AllSamplesFreq_filt) %in% c("Colour", "Label")]
+Colour_dict_filt <- rbind(Colour_dict_filt, stemcell_df)
+
+Colour_values_filt <- Colour_dict_filt$Colour
+names(Colour_values_filt) <- Colour_dict_filt$Label
+
+CellAtlas_Colours_filt <- Colour_values_filt
+
+
+
+SampleCols <- c("BCB20", "BCB20_E", "BCB21",  "BCB21_E", "BCB66", "BCB66_E")
+
+AllSamplesFreq_filt_noEnrich <- AllSamplesFreq_filt[, colnames(AllSamplesFreq_filt) %in% append(SampleCols, c("Colour", "Label"))]
+#AllSamplesFreq_filt_noEnrich <- AllSamplesFreq_filt_noEnrich[!rownames(AllSamplesFreq_filt_noEnrich) %in% c("Stem_cell"),]
+
+### Convert to proportions
+AllSamplesFreq_filt_noEnrich <- as.data.frame(lapply(AllSamplesFreq_filt_noEnrich[, SampleCols], function(x) x / sum(x)), row.names=rownames(AllSamplesFreq_filt_noEnrich))
+#AllSamplesProp$Colour <- AllSamplesFreq$Colour
+
+### Convert to ggplot compatible object
+library(reshape2)
+x <- AllSamplesFreq_filt_noEnrich[, SampleCols]
+x$Label <- rownames(AllSamplesFreq_filt_noEnrich)
+dat2 <- melt(x, id.vars = "Label")
+
+## Spit enriched and non enriched
+library(dplyr)
+library(tidyr)
+dat3 <- separate(dat2, variable, c("Sample", "Enrichment"), "_")
+dat3$Enrichment <- replace(dat3$Enrichment, dat3$Enrichment=="E", "Enriched") 
+dat3$Enrichment <- replace(dat3$Enrichment, is.na(dat3$Enrichment), "Not Enriched") 
+dat3$Enrichment <- factor(dat3$Enrichment, levels=c("Not Enriched", "Enriched"))
+
+dat3$Label <- factor(dat3$Label, levels=rev(unique(dat3$Label)))
+
+library(ggplot2)
+#png(paste0(TALK_FIGURE_SAVE_DIR, "StackedBarchart_Enriched.png", ""), width=9, height=11, units="in", res=800)
+ggplot(dat3, aes(x = Enrichment, y = value, fill = Label)) + geom_bar(position="dodge", stat="identity") + geom_bar(stat = "identity")+xlab("\nSample") +ylab("\nLabel Proportion") +scale_fill_manual(values=Colour_values_filt)+facet_wrap(~Sample)
+#dev.off()
+

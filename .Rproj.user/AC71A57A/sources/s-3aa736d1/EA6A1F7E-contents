@@ -1,0 +1,124 @@
+######################################################################################################
+##
+##  INSTALLING/LOADING PACKAGES FOR SCFUNC
+##
+
+
+#BioC_vers = "3.11" # R version 4.0.0
+#BioC_vers = "3.12"  # R version 4.0.3 +
+#BioC_vers = "3.13"  # R version 4.1.0 +(October 2021)
+BioC_vers = "3.14"  # R version 4.1  + (May 2021)
+
+
+requiredPackages <-
+  c("ggplot2",
+    "gridExtra", "grid",
+    "DropletUtils",
+    "SingleCellExperiment",
+    "scater", "Seurat",
+    "scran", "edgeR",
+    "DropletUtils",
+    "Matrix",
+    "ensembldb",
+    "BiocFileCache",
+    "AnnotationHub",
+    "SingleR",
+    "tidyverse","reshape2", "cowplot",
+    "GSEABase",
+    "VISION","org.Hs.eg.db"
+  )
+
+
+### --- Some may be manual
+# devtools::install_url("http://cran.r-project.org/src/contrib/Archive/Seurat/Seurat_3.1.4.tar.gz")
+
+#devtools::install_github('satijalab/seurat-data')
+
+#install.packages("C:\\Users\\whitfield.h\\Desktop\\Projects\\scDECAF\\Datasets\\PBMC_stim\\ifnb.SeuratData_3.0.0.tar.gz", repos = NULL, type = "source")
+
+
+### --- Checking packages
+
+message("Checking packages...")
+
+InstalledPackages <- installed.packages(priority=NULL)[,'Package']
+missingPackages <- setdiff(requiredPackages, InstalledPackages)
+
+
+
+
+if (!("BiocManager" %in% InstalledPackages)){
+  install.packages("BiocManager")
+  BiocManager::install(version = BioC_vers)
+  
+}
+
+if (!("devtools" %in% InstalledPackages)){
+  install.packages("devtools")
+  
+}
+
+
+
+if (length(missingPackages) == 0) {
+  
+  message("All required packages are installed")
+  
+  for(pkg in requiredPackages){
+    suppressWarnings(suppressMessages(library(pkg, character.only = T)))
+  }
+  
+  
+  
+} else {
+  ##### ----- Installing packages
+  
+  ## Get list of Bioconductor packages
+  library(BiocManager)
+  BioconductorPackages <- rownames(available.packages(contriburl=contrib.url(BiocManager::repositories(version=BioC_vers)[1:4])))
+  
+  nonBioCPackages <- setdiff(missingPackages, BioconductorPackages)
+  missingBioCPackages <- setdiff(missingPackages, nonBioCPackages)
+  
+  if (length(nonBioCPackages) > 0){
+    
+    message("Installing the following required packages")
+    print(nonBioCPackages)
+    install.packages(nonBioCPackages)
+  } 
+  
+  if (length(missingBioCPackages) > 0){
+    
+    message("Installing the following required Bioconductor packages")
+    print(missingBioCPackages)
+    if (!requireNamespace("BiocManager", quietly = TRUE))
+      install.packages("BiocManager")
+    BiocManager::install(missingBioCPackages, version = BioC_vers)
+    
+  } 
+  
+  if ("DropletUtils" %in% missingPackages){
+    BiocManager::install("DropletUtils")
+  }
+
+  if ("VISION" %in% missingPackages){
+    library(devtools)
+    install_github("YosefLab/VISION")
+  }
+  
+  
+  if ("GSEABase" %in% missingPackages){
+    BiocManager::install("GSEABase")
+  }
+  
+  
+  ##### ----- Loading packages
+  message("Loading packges..")
+  for(pkg in requiredPackages){
+    suppressWarnings(suppressMessages(library(pkg, character.only = T)))
+  }
+  
+  
+}
+
+

@@ -1,0 +1,1009 @@
+
+
+
+
+
+### MAKE CUSTOM LEGEND --------------------
+
+
+#' Title
+#'
+#' @param col_dict
+#' @param lab_str
+#' @param title_pos
+#' @param n_row
+#' @param by_row
+#' @param rl
+#' @param buffer
+#'
+#' @return
+#' @export
+#'
+
+GetLegend <- function(col_dict, lab_str, title_pos="top",
+                      n_row=1, by_row=TRUE,rl=1, buffer=margin(0,0,0,0)){
+
+  names(col_dict) <- unlist(lapply(names(col_dict), function(x){str_to_title(x)}))
+  legend_dat_themes <- data.frame(Sample=factor(names(col_dict), levels=names(col_dict)),
+                                  prop=rep(1, length(col_dict)), colours = as.vector(col_dict))
+  legend_bar <- ggplot(legend_dat_themes, aes(x=Sample, y=prop, fill=Sample)) +
+    geom_bar(position="dodge", stat="identity")+
+    scale_fill_manual(values=col_dict)+theme_bw()+
+    theme(legend.text=element_text(size = rel(rl)*1.1),
+          legend.title = element_text(size = rel(rl)*1.3),legend.margin = buffer)+
+    guides(fill=guide_legend(nrow=n_row,byrow=by_row, override.aes = list(size=4),title.position=title_pos),
+           color = guide_legend(override.aes = list(size = 4)),
+           title.position=title_pos)+
+    labs(fill=lab_str)
+  legend_themes <- cowplot::get_legend(legend_bar)
+  return(legend_themes)
+}
+
+
+
+### --- GGPLOT FOR LIMMA'S MDS
+
+#' Title
+#'
+#' @param DGE_x
+#' @param col_str
+#' @param col_pal
+#' @param shape_str
+#' @param shape_pal
+#'
+#' @return
+#' @export
+#'
+#' @examples
+MDS2gg <- function(DGE_x, col_str,col_pal=NULL, shape_str=NULL, shape_pal=NULL){
+
+  col_title <- str_to_title(col_str)
+
+  if (is.null(col_pal)){
+    col_pal <- GetColPal(unique(as.vector(DGE_x$samples[[col_str]])))
+  }
+
+  if (!(is.null(shape_str))){
+
+    shape_title <- str_to_title(shape_str)
+    if (is.null(shape_pal)){
+      shape_pal <- getShapes(unique(as.vector(DGE_x$samples[[shape_str]])))
+    }
+
+    MDS_dat <- limma::plotMDS(cpm(DGE_x, log=TRUE, prior.count = 2),
+                              col=as.vector(col_pal[as.vector(DGE_x$samples[[col_str]])]),
+                              pch=as.vector(shape_pal[as.vector(DGE_x$samples[[shape_str]])]),
+                              cex = 1.6, cex.lab=0.8, cex.axis=0.6, tck=-0.02,mgp = c(1.5, 0.3, 0), plot=FALSE)
+    plot_dat <- data.frame(ColBy=as.vector(DGE_x$samples[[col_str]]),
+                           ShapeBy=as.vector(DGE_x$samples[[shape_str]]),
+                           Dim1=MDS_dat$x,
+                           Dim2=MDS_dat$y)
+    ggplot(data=plot_dat, aes(x=Dim1, y=Dim2, color=ColBy, shape=ShapeBy))+geom_point(size=4)+
+      scale_color_manual(name=col_title, values=col_pal)+scale_shape_manual(name=shape_title,values=shape_pal)+theme_bw()+
+      theme(panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            legend.direction = "vertical", legend.box = "vertical")
+  } else {
+    MDS_dat <- limma::plotMDS(cpm(DGE_x, log=TRUE, prior.count = 2),
+                              col=as.vector(col_pal[as.vector(DGE_x$samples[[col_str]])]),
+                              cex = 1.6, cex.lab=0.8, cex.axis=0.6, tck=-0.02,mgp = c(1.5, 0.3, 0), plot=FALSE)
+    plot_dat <- data.frame(ColBy=as.vector(DGE_x$samples[[col_str]]),
+                           Dim1=MDS_dat$x,
+                           Dim2=MDS_dat$y)
+    ggplot(data=plot_dat, aes(x=Dim1, y=Dim2, color=ColBy))+geom_point(size=4)+
+      scale_color_manual(name=col_title, values=col_pal)+theme_bw()+
+      theme(panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            legend.direction = "vertical", legend.box = "vertical")
+  }
+
+}
+
+
+
+### --- GGPLOT FOR RLE
+
+#' Title
+#'
+#' @param dat_x
+#' @param annot
+#' @param col_str
+#' @param col_pal
+#' @param isLog
+#' @param isLarge
+#' @param ylim
+#' @param zero_line
+#' @param zero_col
+#' @param medPoint
+#' @param whisk
+#'
+#' @return
+#' @export
+#'
+#' @import dplyr
+
+ggRLE <- function(dat_x, annot, col_str, col_pal=NULL, isLog=TRUE,isLarge=FALSE,
+                  ylim = c(-2,2),zero_line=TRUE, zero_col="skyblue", medPoint=FALSE, whisk=1.5){
+
+  col_title <- str_to_title(col_str)
+
+  if (!(setequal(colnames(dat_x), rownames(annot)))){
+    message("Make sure annot rownames match dat_x sample names")
+  }
+
+  if (!(isLog)){
+    dat_x <- log2(dat_x+1)
+  }
+
+  if (is.null(col_pal)){
+    col_pal <- GetColPal(unique(as.vector(annot[[col_str]])))
+  }
+
+  ## Subset to common sample names
+  annot <- annot[order(as.vector(annot[[col_str]])), , drop = F]
+  annot$ColourBy <- as.vector(annot[[col_str]])
+  annot$Sample <- rownames(annot)
+  dat_x <- dat_x[, rownames(annot)]
+
+  ## RLE boxplots
+  rle <- dat_x - rowMedians(dat_x)
+  rleLong <- reshape2::melt(rle, value.name = "RLE", varnames = c("genes", "Sample"))
+
+  rleLong <- merge(data.table::data.table(varhandle::unfactor(rleLong)),  # faster merging
+                   data.table::data.table(varhandle::unfactor(annot)),
+                   by = "Sample", sort=F)
+
+  ## Calculate the median of the RLE boxplots:
+  rleLong <- rleLong %>%
+    dplyr::group_by(Sample) %>%
+    dplyr::mutate(MedRLE = median(RLE)) %>%
+    dplyr::ungroup() %>%
+    data.frame()
+  rleLong$Sample <- factor(rleLong$Sample , levels=unique(rleLong$Sample))
+
+  ## Remove Whiskers of the boxplots if the sample size is very large -- Sep's code
+  if(isLarge){
+    whisk=0
+  }
+
+  if (medPoint){
+    gg <- ggplot(rleLong, aes(x = Sample, y = RLE, fill = ColourBy))+
+      stat_boxplot(geom = "errorbar", width = 0.3)+
+      geom_boxplot(outlier.shape = NA, coef=whisk)+
+      geom_point(data = rleLong[! duplicated(rleLong$Sample), ],
+                 aes(x = Sample, y = MedRLE, fill = ColourBy),
+                 size = 2, shape = 21, colour = "black", lwd = 2)+
+      scale_fill_manual(name=col_title,values = col_pal)+
+      scale_y_continuous(name = "RLE",limits = ylim)+theme_bw()+
+      theme(panel.grid.minor = element_blank(),
+          #  panel.grid.major = element_blank(),
+            axis.ticks.x = element_blank(),
+            axis.text.x = element_blank())
+  } else {
+    gg <- ggplot(rleLong, aes(x = Sample, y = RLE, fill = ColourBy))+
+      stat_boxplot(geom = "errorbar", width = 0.3)+
+      geom_boxplot(outlier.shape = NA,coef=whisk)+
+      scale_fill_manual(name=col_title,values = col_pal)+
+      scale_y_continuous(name = "RLE",limits = ylim)+theme_bw()+
+      theme(panel.grid.minor = element_blank(),
+          #  panel.grid.major = element_blank(),
+            axis.ticks.x = element_blank(),
+            axis.text.x = element_blank())
+  }
+
+  if (zero_line){
+    gg <- gg + geom_hline(yintercept = 0, col = zero_col, lwd = 1)+
+            theme(panel.grid.major=element_blank())
+  }
+  return(gg)
+}
+
+#' Title
+#'
+#' @param DGE_x
+#' @param col_str
+#' @param col_pal
+#' @param geneLengths
+#'
+#' @return
+#' @export
+#'
+#' @importFrom  edgeR cpm rpkm
+RLE2gg <- function(DGE_x, col_str, col_pal, geneLengths){
+
+  if (is.na(geneLengths)){
+    dat <- cpm(DGE_x, log=TRUE, prior.count = 1)
+  } else {
+    dat <- rpkm(DGE_x, log=TRUE, prior.count = 1, gene.length=geneLengths)
+  }
+
+  annot_x <- DGE_x$samples
+  annot_x$Sample <- rownames(annot_x)
+  # as.vector(DGE_x$samples[[col_str]])
+
+  return(ggRLE(dat, annot_x, col_str, col_pal))
+
+}
+
+
+### --- GGPLOT FOR PCA
+
+#' Title
+#'
+#' @param dat_x
+#' @param annot
+#' @param col_str
+#' @param col_pal
+#' @param shape_str
+#' @param shape_pal
+#' @param IS_LOG
+#' @param CENTRE
+#' @param SIZE
+#' @param k
+#' @param k_vec
+#'
+#' @return
+#' @export
+#'
+#' @examples
+ggPCA <- function(dat_x, annot, col_str, col_pal=NULL,
+                  shape_str=NULL, shape_pal=NULL,
+                  IS_LOG=FALSE, CENTRE=TRUE,
+                  SIZE=4, k=2, k_vec=c(1, 2)){
+
+  if (!(setequal(colnames(dat_x), rownames(annot)))){
+    message("Make sure annot rownames match dat_x sample names")
+  }
+
+  if (is.null(col_pal)){
+    col_pal <- GetColPal(unique(as.vector(annot[[col_str]])))
+  }
+
+  ## Organise annotations
+  annot$ColourBy <- as.vector(annot[[col_str]])
+  annot$Sample <- rownames(annot)
+  dat_x <- dat_x[, rownames(annot)]
+  col_title <- str_to_title(col_str)
+
+  ## PCA
+  PC_dat <- calc_pca(dat_x, is.log=IS_LOG, centre=CENTRE)
+
+  ## Get plot data
+  plot_dat <- as.data.frame(do.call(cbind,
+                        lapply(1:k, function(x){PC_dat$sing.val$u[,x]})))
+  colnames(plot_dat) <- paste0("PC", 1:k)
+  plot_dat$Sample <- colnames(dat_x)
+
+  plot_dat_merge <- merge(data.table::data.table(plot_dat),  # faster merging
+                   data.table::data.table(annot),
+                   by = "Sample", sort=F)
+
+  if (k==2){
+    k_x <- paste0("PC", k_vec[[1]])
+    k_y <- paste0("PC", k_vec[[2]])
+    plot_dat_merge$PC_x <- plot_dat_merge[[k_x]]
+    plot_dat_merge$PC_y <-plot_dat_merge[[k_y]]
+
+    if(!(is.null(shape_str))){
+      plot_dat_merge$ShapeBy <- as.vector(plot_dat_merge[[shape_str]])
+      shape_title <- str_to_title(shape_str)
+      if (is.null(shape_pal)){
+        shape_pal <- getShapes(unique(as.vector(plot_dat_merge$ShapeBy)))
+      }
+
+      ggplot(plot_dat_merge, aes(x=PC_x, y=PC_y, colour=ColourBy, shape=ShapeBy))+geom_point(size=SIZE)+
+        scale_color_manual(name=col_title, values=col_pal)+
+        scale_shape_manual(name=shape_title,values=shape_pal)+theme_bw()+
+        theme(panel.grid.minor = element_blank(),
+              panel.grid.major = element_blank(),
+              legend.direction = "vertical", legend.box = "vertical")+
+        labs(x=paste0(k_x," (", PC_dat$var[[k_vec[[1]]]],"%)"), y=paste0(k_y," (", PC_dat$var[[k_vec[[2]]]],"%)"))
+
+
+    } else {
+      ggplot(plot_dat_merge, aes(x=PC_x, y=PC_y, colour=ColourBy))+geom_point(size=SIZE)+
+        scale_color_manual(name=col_title, values=col_pal)+theme_bw()+
+        theme(panel.grid.minor = element_blank(),
+              panel.grid.major = element_blank(),
+              legend.direction = "vertical", legend.box = "vertical")+
+        labs(x=paste0(k_x," (", PC_dat$var[[k_vec[[1]]]],"%)"), y=paste0(k_y," (", PC_dat$var[[k_vec[[2]]]],"%)"))
+    }
+
+
+  } else {
+
+
+    gg_dat <- reshape2::melt(plot_dat, value.name="weight", id.vars="Sample", variable.name="PC")
+
+    all_combinations <- combn(as.vector(unique(gg_dat$PC)),2)
+    plot_lst <- lapply(1:ncol(all_combinations), function(i){
+      k_x <- all_combinations[1, i]
+      k_y <- all_combinations[2, i]
+      plot_dat_merge$PC_x <- plot_dat_merge[[k_x]]
+      plot_dat_merge$PC_y <-plot_dat_merge[[k_y]]
+
+      ggplot(plot_dat_merge, aes(x=PC_x, y=PC_y, colour=ColourBy))+geom_point(size=SIZE)+
+        scale_color_manual(name=col_title, values=col_pal)+theme_bw()+
+        theme(panel.grid.minor = element_blank(),
+              panel.grid.major = element_blank(),
+              legend.direction = "vertical", legend.box = "vertical")+
+        labs(x=k_x, y=k_y)
+    })
+    names(plot_lst) <- unlist(lapply(1:ncol(all_combinations), function(i){
+      paste0(all_combinations[1, i],"_vs_",all_combinations[2, i])}))
+
+    ### Co-ordinate grid so that descending row is PC1->
+    plot_lst_rows <- lapply(1:(k-1), function(row_j){
+      plot_lst[names(plot_lst)[grepl(paste0("PC", row_j,"_vs"),names(plot_lst))]]
+      })
+
+    ### Add NULL plots
+    plot_rows <- c()
+    for (x in 1:length(plot_lst_rows)){
+      numbNull <- k-1-length(plot_lst_rows[[x]])
+      if (numbNull > 0){
+        plot_rows <- c(plot_rows,vector(mode = 'list', length = numbNull),plot_lst_rows[[x]])
+      } else {
+        plot_rows <- c(plot_rows,plot_lst_rows[[x]])
+      }}
+
+    ## Add legend to bottom right
+    my_leg <- get_legend(plot_rows[[1]])
+    n_leg <- length(plot_rows)-length(plot_lst_rows)+1
+
+    ## And remove legends
+    plot_rows <- lapply(plot_rows, function(plot_x){plot_x+theme(legend.position = "none")})
+
+    ## Plot!
+    return(cowplot::plot_grid(plotlist=plot_rows,
+                              ncol=k-1, nrow=length(plot_lst_rows), byrow=TRUE))
+  }
+
+}
+
+
+
+
+
+
+#' Title
+#'
+#' @param DGE_obj
+#' @param GENE_str
+#' @param colourBy
+#' @param col.pal
+#' @param textSize
+#' @param logCPM
+#' @param CORRECTED_data
+#'
+#' @return
+#' @export
+#'
+#' @importFrom edgeR cpm rpkm
+PlotGene <- function(DGE_obj, GENE_str, colourBy, col.pal, textSize=1.5, logCPM=TRUE, CORRECTED_data = NA){
+
+  ## Get data
+  GENE_id <- DGE_obj$genes[DGE_obj$genes$hgnc_symbol %in% c(GENE_str),]$ensembl_gene_id
+
+  ## Get meta data
+  annot <- setNames(as.vector(DGE_obj$samples[, colnames(DGE_obj$samples) %in% c(colourBy)]),  rownames(DGE_obj$samples))
+
+  ## Prep data for plotting
+  if (!is.na(CORRECTED_data)){
+    PLOT_DATA <- CORRECTED_data[rownames(CORRECTED_data) %in% c(GENE_id), ]
+    DATA_long <- reshape2::melt(PLOT_DATA)
+    DATA_long$colourBy <- as.vector(annot[rownames(DATA_long)])
+    DATA_long$Var2 <- rownames(DATA_long)
+    units = "(Corrected logCPM)"
+  } else if (logCPM){
+    PLOT_DATA <- cpm(DGE_obj, log=TRUE, prior.count = 1)
+    PLOT_DATA <- PLOT_DATA[rownames(PLOT_DATA) %in% c(GENE_id), ]
+    DATA_long <- reshape2::melt(PLOT_DATA)
+    DATA_long$colourBy <- as.vector(annot[rownames(DATA_long)])
+    DATA_long$Var2 <- rownames(DATA_long)
+    units = "(logCPM)"
+  } else {
+    PLOT_DATA <- DGE_obj[rownames(DGE_obj) %in% c(GENE_id), ]$counts
+    DATA_long <- reshape2::melt(PLOT_DATA)
+    DATA_long$colourBy <- as.vector(annot[DATA_long$Var2])
+    units = "(counts)"
+  }
+
+  p <- ggplot(DATA_long, aes(x = Var2, y = value, fill = colourBy)) +
+    geom_col(alpha = 0.7) +
+    scale_fill_manual(values = col.pal) +
+    # scale_y_continuous(limits = ylim)+
+    theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1, size = rel(textSize)), legend.title=element_blank())+
+    labs(y=paste0(GENE_str, " expression ", units), x = "Samples", fill=colourBy)
+
+  print(p)
+}
+
+
+
+#' Title
+#'
+#' @param DATA
+#' @param genes_to_subset
+#' @param ColourBy_cell
+#' @param save_path
+#' @param COLOUR_vector
+#' @param scale
+#' @param cluster_genes
+#' @param RowSide
+#' @param RowSide.pal
+#'
+#' @return
+#' @export
+#'
+#' @examples
+PlotHeatmap_HC <- function(DATA, genes_to_subset, ColourBy_cell,
+                           save_path,  COLOUR_vector,
+                           scale = "Genes",cluster_genes =FALSE, RowSide=NA, RowSide.pal=NA){
+
+  genes_to_subset <- unique(genes_to_subset)
+  genes_to_subset <- genes_to_subset[genes_to_subset %in% rownames(DATA)]
+
+  colNames <- colnames(DATA)
+  DATA <- t(DATA[rownames(DATA) %in% genes_to_subset,])
+
+
+  if (scale == "Genes"){
+    ## Scale the columns (or genes)
+    DATA <- as.data.frame(scale(DATA))
+
+  } else if (scale == "Samples"){
+
+    DATA <- as.data.frame(t(scale(t(DATA))))
+
+  } else if (scale == "Both") {
+
+    DATA <- t(scale(t(DATA)))
+    DATA <- as.data.frame(scale(DATA))
+
+  } else if (scale == "None"){
+    DATA <- as.data.frame(DATA)
+
+  }
+
+
+  DATA_orig <- DATA
+
+  #DATA <- DATA[order(DATA$variable, as.vector(unique(DATA$variable))[colInd]),]
+
+  if (!is.na(RowSide)){
+    if (is.na(RowSide.pal)){
+      RowSide.pal <- c("#CABEE9", "#7C7189", "#FAE093", "#D04E59", "#BC8E7D", "#2F3D70")
+      RowSide.pal <- RowSide.pal[1:length(unique(RowSide))]
+      names(RowSide.pal) <- unique(RowSide)
+
+
+    }
+
+    SideBar_dict <- RowSide
+    names(SideBar_dict) <- colNames
+    SideBarColours_dict <- as.vector(unlist(lapply(names(SideBar_dict), function(x){RowSide.pal[SideBar_dict[x]]})))
+    names(SideBarColours_dict) <- colNames
+
+   # png(save_path,  width=2000, height=2000,  res=200)
+    heatmap3(DATA_orig, scale = "none", main="",
+             RowSideLabs="",#margins=c(2,10),
+             labCol=rep("", ncol(DATA_orig)),xlab="", ylab="",
+             col=COLOUR_vector, cexRow=1,showColDendro=FALSE, RowSideColors=SideBarColours_dict) # rev(brewer.pal(name = "YlGnBu", n=9))
+   # dev.off()
+
+  } else {
+
+    ### Clustering on rows and columns to reorder geom_tiles()
+
+    ddr <- as.dendrogram(flashClust::hclust(stats::dist(DATA)))
+    Rowv <- rowMeans(DATA, na.rm = TRUE)
+    hcr <- flashClust::hclust(stats::dist(DATA))
+    ddr <- as.dendrogram(hcr)
+    ddr <- reorder(ddr, Rowv)
+    rowInd <- order.dendrogram(ddr)
+
+    if (cluster_genes == FALSE){
+
+      colInd <- match(genes_to_subset,colnames(DATA))
+    } else {
+      Colv <- colMeans(DATA, na.rm = TRUE)
+      hcc <- hclust(dist(t(DATA)))
+      ddc <- as.dendrogram(hcc)
+      ddc <- reorder(ddc, Colv)
+      colInd <- order.dendrogram(ddc)
+    }
+
+
+    #library(gplots)
+    #  p1 <- heatmap.2(DATA, scale = "none")
+    # p1 <- heatmap(as.matrix(plot_df), Rowv=NA, Colv=NA, scale="row") #RowSideColors=colSide, col=colMain
+
+    DATA <- DATA[,colnames(DATA)[colInd]]
+    names(DATA) <- factor(names(DATA), levels = unique(names(DATA)))
+
+    DATA$ColourBy <- ColourBy_cell
+    DATA <- DATA[rowInd,]
+    DATA$ColourBy <- factor(DATA$ColourBy, levels=unique(DATA$ColourBy))
+
+
+    DATA <- reshape2::melt(DATA, value.name="LogCounts", id.vars="ColourBy")
+    DATA$`LogCounts` <- as.numeric(DATA$`LogCounts`)
+
+    NA_COL <-  COLOUR_vector [length(COLOUR_vector )/2]
+
+    p1 <- ggplot(DATA, aes(ColourBy, variable, fill = `LogCounts`)) +
+      geom_tile() + theme(axis.text.x=element_text(hjust=1,angle=45, size=14), axis.text.y=element_text(size=12))+ #hjust=1,vjust=0.5,
+      scale_fill_gradientn(colours=COLOUR_vector, na.value=NA_COL) #  Colours[length(Colours)/2] # limits = LIM,
+    #    scale_fill_distiller(palette=colorRampPalette(ocean.curl), limits = c(-2, 2))
+    png(save_path,  width=12, height=34, units="in", res=800)
+    print(p1)
+    dev.off()
+  }
+
+}
+
+
+
+
+### --- PCA calculation
+
+#' Title
+#'
+#' @param data
+#' @param is.log
+#' @param centre
+#'
+#' @return
+#' @export
+#'
+
+calc_pca <- function(data, is.log, centre) {
+
+  if(is.log == TRUE){
+    data <- data
+  }else{
+    data <- log2(data + 1)
+  }
+  svd <- svd(apply(data, 1, function(x) scale(x, scale = FALSE, center = centre)))
+  percent <- svd$d^2/sum(svd$d^2)*100
+  percent <- sapply(seq_along(percent), function(i) {round(percent[i], 2)})
+  return(list(sing.val = svd, var = percent))
+
+  ## These are all the same PCA
+  # 1)
+  # PlotMyPCA(LEGO_DGE_ALL$batch_corrected, LEGO_DGE_ALL$samples$clone, "bottomright", "", LOG.str=TRUE)
+  # ^^ I think this one filters data by variance before running PCA ^^
+  # 2)
+  # pcs_ALL_t <- calc_pca(LEGO_DGE_ALL$batch_corrected, is.log=TRUE, centre=TRUE)
+  # plot(pcs_ALL_t$sing.val$u[,1], pcs_ALL_t$sing.val$u[,2])
+  # 3)
+  # pca<-prcomp(t(LEGO_DGE_ALL$batch_corrected))
+  # plot(as.data.frame(pca$x)$PC1, as.data.frame(pca$x)$PC2)
+}
+
+
+
+
+### --- UPSET PLOTS
+
+#' Title
+#'
+#' @param DATA
+#' @param col_names
+#' @param bar_col
+#' @param name_str
+#' @param OUTPUT_PATH
+#' @param sce
+#'
+#' @return
+#' @export
+#'
+#' @import ComplexUpset
+UpsetPlot_wBars <- function(DATA, col_names, bar_col, name_str, OUTPUT_PATH = NULL, sce = FALSE){
+  ## DATA == data.frame()
+  ## rows are observations, cols are variables
+  require(ComplexUpset)
+  ### --- Prep data
+  if (sce == TRUE){
+
+    bar_vec <- DATA[[bar_col]]
+    names(bar_vec) <- colnames(DATA)
+    DATA <- DATA[rownames(DATA) %in% col_names,]
+    DATA <- DATA[, colSums(logcounts(DATA))>0]
+    DATA <- as.data.frame(as.matrix(logcounts(DATA)))
+
+    DATA_binary <- DATA > 0
+    DATA_binary <- data.frame(t(DATA_binary))
+    DATA_binary$Sample <- as.vector(bar_vec[rownames(DATA_binary)])
+
+  } else{
+    DATA <- DATA[, colnames(DATA) %in% c(col_names,bar_col)]
+    DATA_binary <- DATA > 0
+
+  }
+
+  ### --- Make colour dict
+  Color_dict <- gg_color_hue(length(unique(DATA_binary$Sample)))
+  names(Color_dict) <- unique(DATA_binary$Sample)
+
+
+  ### --- Plot
+  if (!(is.null(OUTPUT_PATH))){
+    png(OUTPUT_PATH,width=16, height=14, units="in", res=800)
+    print(ComplexUpset::upset(data=DATA_binary, intersect=col_names, name=name_str, width_ratio=0.26,
+                annotations = list(
+                  '% cells from \neach sample ID'=list(
+                    aes=aes(x=intersection, fill=Sample),
+                    geom=list(
+                      geom_bar(stat='count', position='fill'),
+                      theme(legend.position = "top"),
+                      scale_y_continuous(labels=scales::percent_format()),
+                      scale_fill_manual(values = Color_dict[as.character(unique(DATA_binary$Sample))])
+                    )
+                  )
+                )))
+    dev.off()
+
+  } else {
+    ComplexUpset::upset(data=DATA_binary, intersect=col_names, name=name_str, width_ratio=0.26,
+          annotations = list(
+            '% cells from \neach sample ID'=list(
+              aes=aes(x=intersection, fill=Sample),
+              geom=list(
+                geom_bar(stat='count', position='fill'),
+                theme(legend.position = "top"),
+                scale_y_continuous(labels=scales::percent_format()),
+                scale_fill_manual(values = Color_dict[as.character(unique(DATA_binary$Sample))])
+              )
+            )
+          ))
+  }
+
+}
+
+
+#' Title
+#'
+#' @param DATA
+#' @param col_names
+#' @param bar_col
+#' @param name_str
+#' @param OUTPUT_PATH
+#' @param sce
+#'
+#' @return
+#' @export
+#'
+#' @import ComplexUpset
+
+UpsetPlot <- function(DATA, col_names, bar_col, name_str, OUTPUT_PATH = NULL, sce = FALSE){
+  ## DATA == data.frame()
+  ## rows are observations, cols are variables
+  require(ComplexUpset)
+  ### --- Prep data
+  if (sce == TRUE){
+
+    bar_vec <- DATA[[bar_col]]
+    names(bar_vec) <- colnames(DATA)
+    DATA <- DATA[rownames(DATA) %in% col_names,]
+    DATA <- DATA[, colSums(logcounts(DATA))>0]
+    DATA <- as.data.frame(as.matrix(logcounts(DATA)))
+
+    DATA_binary <- DATA > 0
+    DATA_binary <- data.frame(t(DATA_binary))
+    DATA_binary$Sample <- as.vector(bar_vec[rownames(DATA_binary)])
+
+  } else{
+    DATA <- DATA[, colnames(DATA) %in% c(col_names,bar_col)]
+    DATA_binary <- DATA > 0
+
+  }
+
+  ### --- Make colour dict
+  Color_dict <- gg_color_hue(length(unique(DATA_binary$Sample)))
+  names(Color_dict) <- unique(DATA_binary$Sample)
+
+
+  ### --- Plot
+  if (!(is.null(OUTPUT_PATH))){
+    png(OUTPUT_PATH,width=16, height=14, units="in", res=800)
+    print(ComplexUpset::upset(data=DATA_binary, intersect=col_names, name=name_str, width_ratio=0.2))
+    dev.off()
+
+  } else {
+    ComplexUpset::upset(data=DATA_binary, intersect=col_names, name=name_str, width_ratio=0.2)
+  }
+
+}
+
+
+### --- GENE LOADING PYRAMID PLOT
+
+
+#' Title
+#'
+#' @param TOPTAG_Object_x
+#' @param TOPTAG_Object_y
+#' @param NAME_x_str
+#' @param NAME_y_str
+#' @param GeneList_HGNC
+#' @param UP_str
+#' @param DOWN_str
+#' @param UP_col
+#' @param DOWN_col
+#'
+#' @return
+#' @export
+#'
+#' @examples
+GenePyramid_2Datsets <- function(TOPTAG_Object_x, TOPTAG_Object_y,
+                                 NAME_x_str, NAME_y_str, GeneList_HGNC,
+                                 UP_str="UP", DOWN_str="DOWN",
+                                 UP_col="#679089", DOWN_col="#A18FBA"){
+
+  ## Toptags objects are created with `topTags` from edgeR
+  ## Columns include gene ids, logFC, FDR. Pvalue etc.
+
+  ## This code works on output downstream of my EdgeRProcessing function/s from `PipelineFunctions.R`
+
+  ymax <- 6
+  ymin <- -6.5
+  col_dict <-  c(UP_str = UP_col, DOWN_str = DOWN_col)
+  names(col_dict) <- c(UP_str, DOWN_str)
+
+  THEME <- theme_minimal() + theme(panel.border = element_blank(),
+                                    panel.grid.major = element_blank(),
+                                    panel.grid.minor = element_blank(),
+                                    axis.line.x = element_line(colour = "black"),
+                                    axis.ticks.y = element_blank(),
+                                    axis.line.y = element_blank(),
+                                    axis.title.y = element_blank(),
+                                    axis.text.y = element_text(color="black"))
+
+  THEME <- theme(panel.grid.minor = element_blank(),
+                 panel.grid.major = element_blank(),
+                 axis.text.y = element_blank(),
+                 axis.title.y = element_blank(),
+                 plot.title = element_text(size = 10, hjust = 0.5))
+
+
+  ## Merge datasets
+  logFC_vector_X <- TOPTAG_Object_x$logFC[match(GeneList_HGNC, TOPTAG_Object_x$hgnc_symbol)]
+  logFC_vector_X[is.na(logFC_vector_X)] <- 0
+  FDR_vector_X <- TOPTAG_Object_x$FDR[match(GeneList_HGNC, TOPTAG_Object_x$hgnc_symbol)]
+  FDR_vector_X[is.na(FDR_vector_X)] <- 1
+  logFC_vector_Y <- TOPTAG_Object_y$logFC[match(GeneList_HGNC, TOPTAG_Object_y$hgnc_symbol)]
+  logFC_vector_Y[is.na(logFC_vector_Y)] <- 0
+  FDR_vector_Y <- TOPTAG_Object_y$FDR[match(GeneList_HGNC, TOPTAG_Object_y$hgnc_symbol)]
+  FDR_vector_Y[is.na(FDR_vector_Y)] <- 1
+
+  DIRECTION_idx_1 <- logFC_vector_X >= 0
+  DIRECTION_idx_2 <- logFC_vector_Y >= 0
+  DIRECTION_idx_1 <- replace(DIRECTION_idx_1, DIRECTION_idx_1==TRUE, UP_str)
+  DIRECTION_idx_1 <- replace(DIRECTION_idx_1, DIRECTION_idx_1==FALSE, DOWN_str)
+  DIRECTION_idx_2 <- replace(DIRECTION_idx_2, DIRECTION_idx_2==TRUE, UP_str)
+  DIRECTION_idx_2 <- replace(DIRECTION_idx_2, DIRECTION_idx_2==FALSE, DOWN_str)
+
+  ggdat <- data.frame(Genes= rep(GeneList_HGNC, 2) ,
+                      logFC = c(abs(logFC_vector_X), abs(logFC_vector_Y)),
+                      # LEGOlogFC = abs(LEGO_logFC_vector),
+                      # BROCADElogFC = abs(BROCADE_logFC_vector),
+                      Direction = c(DIRECTION_idx_1, DIRECTION_idx_2),
+                      # LEGOdir =DIRECTION_idx_1,
+                      #BROCADEdir =DIRECTION_idx_2
+                      log10FDR = c(-1* log10(FDR_vector_X), -1* log10(FDR_vector_Y)),
+                      Dataset = c(rep(NAME_x_str, length(GeneList_HGNC)), rep(NAME_y_str, length(GeneList_HGNC)))
+  )
+
+  gg <- ggplot(ggdat, aes(x=reorder(Genes, logFC))) +
+    geom_bar(data=ggdat[ggdat$Dataset==NAME_x_str,],  aes(y=logFC, fill=Direction, alpha=log10FDR), stat="identity") +
+    geom_bar(data=ggdat[ggdat$Dataset==NAME_y_str,],  aes(y=-logFC, fill=Direction, alpha=log10FDR), stat="identity") +
+    geom_hline(yintercept=0, colour="white", lwd=1) +
+    coord_flip(ylim=c(ymin,ymax)) + scale_y_continuous(breaks=seq(-6,6,2), labels=c(6,4,2,0,2,4,6))+ggtitle(paste(NAME_x_str, NAME_y_str, sep="                                                 "))+
+    labs(x="Genes")+scale_fill_manual("Direction", values = col_dict)+scale_alpha(range = c(0.1, 1), guide=FALSE)
+  plot(gg)
+}
+
+
+#' Title
+#'
+#' @param TOPTAG_Object_x
+#' @param TOPTAG_Object_y
+#' @param NAME_x_str
+#' @param NAME_y_str
+#' @param GeneList_HGNC
+#' @param UP_str
+#' @param DOWN_str
+#' @param UP_col
+#' @param DOWN_col
+#' @param return
+#'
+#' @return
+#' @export
+#'
+#' @examples
+GenePyramid_2Datsets_v2 <- function(TOPTAG_Object_x, TOPTAG_Object_y,
+                                    NAME_x_str, NAME_y_str,
+                                    GeneList_HGNC,
+                                    UP_str="UP", DOWN_str="DOWN",
+                                    UP_col="#679089", DOWN_col="#A18FBA",
+                                    return=FALSE){
+
+
+
+  ## Toptags objects are created with `topTags` from edgeR
+  ## Columns include gene ids, logFC, FDR. Pvalue etc.
+
+  ## This code works on output downstream of my EdgeRProcessing function/s from `PipelineFunctions.R`
+
+
+
+  col_dict <-  c(UP_str = UP_col, DOWN_str = DOWN_col)
+  names(col_dict) <- c(UP_str, DOWN_str)
+
+
+  THEME <- theme(panel.grid.minor = element_blank(),
+                 panel.grid.major = element_blank(),
+                 axis.text.y = element_blank(),
+                 axis.title.y = element_blank(),
+                 axis.ticks.length = unit(0.001, "pt"),
+                 plot.title = element_text(size = 10, hjust = 0.5))
+
+  ## Get visually pretty gene ordering
+  ## order of X takes precedent
+  x <- TOPTAG_Object_x[TOPTAG_Object_x$hgnc_symbol %in% GeneList_HGNC,]
+  X_order <- x[order(-x$logFC),]$hgnc_symbol
+  not_X <- GeneList_HGNC[!(GeneList_HGNC %in% TOPTAG_Object_x$hgnc_symbol)]
+  y <- TOPTAG_Object_y[TOPTAG_Object_y$hgnc_symbol %in% not_X,]
+  Y_order <- y[order(-y$logFC),]$hgnc_symbol
+  Gene_order <- c(X_order, Y_order)
+
+  ## Merge datasets
+  logFC_vector_X <- TOPTAG_Object_x$logFC[match(Gene_order, TOPTAG_Object_x$hgnc_symbol)]
+  logFC_vector_X[is.na(logFC_vector_X)] <- 0
+  FDR_vector_X <- TOPTAG_Object_x$FDR[match(Gene_order, TOPTAG_Object_x$hgnc_symbol)]
+  FDR_vector_X[is.na(FDR_vector_X)] <- 1
+  logFC_vector_Y <- TOPTAG_Object_y$logFC[match(Gene_order, TOPTAG_Object_y$hgnc_symbol)]
+  logFC_vector_Y[is.na(logFC_vector_Y)] <- 0
+  FDR_vector_Y <- TOPTAG_Object_y$FDR[match(Gene_order, TOPTAG_Object_y$hgnc_symbol)]
+  FDR_vector_Y[is.na(FDR_vector_Y)] <- 1
+
+  ymax <- ceiling(max(c(abs(logFC_vector_X), abs(logFC_vector_Y))))
+
+  DIRECTION_idx_1 <- logFC_vector_X >= 0
+  DIRECTION_idx_2 <- logFC_vector_Y >= 0
+  DIRECTION_idx_1 <- replace(DIRECTION_idx_1, DIRECTION_idx_1==TRUE, UP_str)
+  DIRECTION_idx_1 <- replace(DIRECTION_idx_1, DIRECTION_idx_1==FALSE, DOWN_str)
+  DIRECTION_idx_2 <- replace(DIRECTION_idx_2, DIRECTION_idx_2==TRUE, UP_str)
+  DIRECTION_idx_2 <- replace(DIRECTION_idx_2, DIRECTION_idx_2==FALSE, DOWN_str)
+
+  ggdat <- data.frame(Genes= rep(Gene_order, 2) ,
+                      logFC = c(abs(logFC_vector_X), abs(logFC_vector_Y)),
+                      # LEGOlogFC = abs(LEGO_logFC_vector),
+                      # BROCADElogFC = abs(BROCADE_logFC_vector),
+                      Direction = c(DIRECTION_idx_1, DIRECTION_idx_2),
+                      # LEGOdir =DIRECTION_idx_1,
+                      #BROCADEdir =DIRECTION_idx_2
+                      log10FDR = c(-1* log10(FDR_vector_X), -1* log10(FDR_vector_Y)),
+                      Dataset = c(rep(NAME_x_str, length(GeneList_HGNC)), rep(NAME_y_str, length(GeneList_HGNC)))
+  )
+
+
+
+
+  #### 1. "Y" plot - to appear on the right
+  ggdat_Y <- ggdat[ggdat$Dataset==NAME_y_str,]
+  ggdat_Y$Genes <- factor(ggdat_Y$Genes, levels = ggdat_Y$Genes)
+  gg_Y <- ggplot(data = ggdat_Y, aes(x=Genes)) +
+    geom_bar(aes(y = logFC, fill=Direction, alpha=log10FDR), stat = "identity") +
+    coord_flip() + scale_y_continuous(breaks=seq(0,ymax,1), labels=seq(0,ymax,1),  limits = c(0, ymax), expand = c(0,0)) +
+    labs(x = NULL)+ggtitle(NAME_y_str)+THEME+ theme(plot.margin= unit(c(1, 0, 0, 0), "lines"))+scale_fill_manual("Direction", values = col_dict)+scale_alpha(range = c(0.1, 1), guide='legend')+theme(panel.border = element_blank())
+
+  # get ggplot grob
+  gg_Y_grob <- ggplotGrob(gg_Y)
+
+  #### 4. Get the legend
+  leg = gg_Y_grob$grobs[[which(gg_Y_grob$layout$name == "guide-box")]]
+
+  #### 1. back to "Y" plot - to appear on the right
+  # remove legend
+  legPos = gg_Y_grob$layout$l[grepl("guide", gg_Y_grob$layout$name)]  # legend's position
+  gg_Y_grob = gg_Y_grob[, -c(legPos-1,legPos)]
+
+  #### 2. "female" plot - to appear on the left -
+  # reverse the 'Percent' axis using trans = "reverse"
+
+  ggdat_X <- ggdat[ggdat$Dataset==NAME_x_str,]
+  ggdat_X$Genes <- factor(ggdat_X$Genes, levels = ggdat_X$Genes)
+  gg_X <- ggplot(data =ggdat_X, aes(x=Genes)) +
+    geom_bar(aes(y = logFC, fill=Direction, alpha=log10FDR), stat = "identity") +
+    coord_flip() + scale_y_continuous(breaks=seq(0,ymax,1), labels=seq(0,ymax,1), trans = 'reverse', limits = c(ymax, 0), expand = c(0,0)) + THEME+
+    labs(x = NULL)+ggtitle(NAME_x_str)+ theme(plot.margin= unit(c(1, 0, 0, 1), "lines"))+scale_fill_manual("Direction", values = col_dict)+scale_alpha(range = c(0.1, 1), guide='legend')+theme(panel.border = element_blank())
+
+  # get ggplot grob
+  gg_X_grob <- ggplotGrob(gg_X)
+
+  #### 4. Get the legend
+  leg = gg_X_grob$grobs[[which(gg_X_grob$layout$name == "guide-box")]]
+
+  # remove legend
+  gg_X_grob = gg_X_grob[, -c(legPos-1,legPos)]
+
+  ## Swap the tick marks to the right side of the plot panel
+  # Get the row number of the left axis in the layout
+  rn <- which(gg_X_grob$layout$name == "axis-l")
+
+  # Extract the axis (tick marks and axis text)
+  axis.grob <- gg_X_grob$grobs[[rn]]
+  axisl <- axis.grob$children[[2]]  # Two children - get the second
+  # axisl  # Note: two grobs -  text and tick marks
+
+  # Get the tick marks - NOTE: tick marks are second
+  yaxis = axisl$grobs[[2]]
+  yaxis$x = yaxis$x - unit(1, "npc") + unit(2.75, "pt") # Reverse them
+
+  # Add them to the right side of the panel
+  # Add a column to the gtable
+  panelPos = gg_X_grob$layout[grepl("panel", gg_X_grob$layout$name), c('t','l')]
+  gg_X_grob <- gtable_add_cols(gg_X_grob, gg_X_grob$widths[3], panelPos$l)
+  # Add the grob
+  gg_X_grob <-  gtable_add_grob(gg_X_grob, yaxis, t = panelPos$t, l = panelPos$l+1)
+
+  # Remove original left axis
+  gg_X_grob = gg_X_grob[, -c(2,3)]
+
+
+  #### 3. country labels - create a plot using geom_text - to appear down the middle
+  fontsize = 3
+  gg_LABELS <- ggplot(data = ggdat_Y, aes(x=Genes)) +
+    geom_bar(stat = "identity", aes(y = 0)) +
+    geom_text(aes(y = 0,  label = Genes), size = fontsize) +
+    ggtitle("Genes") +
+    coord_flip() + theme_bw() + THEME+
+    theme(panel.border = element_rect(colour = NA))
+
+  # get ggplot grob
+  gg_LABELS <- ggplotGrob(gg_LABELS)
+
+  # Get the title
+  Title = gg_LABELS$grobs[[which(gg_LABELS$layout$name == "title")]]
+
+  # Get the plot panel
+  gg_LABELS = gg_LABELS$grobs[[which(gg_LABELS$layout$name == "panel")]]
+
+  #### Arrange the components
+  ## First, combine "LEFT" and "RIGHT" plots
+  gg_final = cbind(gg_X_grob, gg_Y_grob, size = "first")
+
+  ## Second, add the labels (gtC) down the middle
+  # add column to gtable
+  maxlab = Gene_order[which(str_length(Gene_order) == max(str_length(Gene_order)))]
+  gg_final = gtable_add_cols(gg_final, sum(unit(1, "grobwidth", textGrob(maxlab, gp = gpar(fontsize = fontsize*72.27/25.4))), unit(5, "mm")),
+                             pos = length(gg_X_grob$widths))
+
+  # add the grob
+  gg_final = gtable_add_grob(gg_final, gg_LABELS, t = panelPos$t, l = length(gg_X_grob$widths) + 1)
+
+  # add the title; ie the label 'country'
+  titlePos = gg_X_grob$layout$l[which(gg_X_grob$layout$name == "title")]
+  gg_final = gtable_add_grob(gg_final, Title, t = titlePos, l = length(gg_X_grob$widths) + 1)
+
+  ## Third, add the legend to the right
+  gg_final = gtable_add_cols(gg_final, sum(leg$width), -1)
+  gg_final = gtable_add_grob(gg_final, leg, t = panelPos$t, l = length(gg_final$widths))
+
+  if (return){
+    return(gg_final)
+  } else {
+    # draw the plot
+    grid.newpage()
+    grid.draw(gg_final)
+  }
+
+}
+
+
+
+
+

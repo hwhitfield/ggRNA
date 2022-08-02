@@ -1,0 +1,32 @@
+
+
+
+requiredPackages <-
+  c("data.table","DropletUtils", "GSEABase",  "reshape2", "scran",
+    "scater", "Seurat")
+
+for(pkg in requiredPackages){
+  suppressWarnings(suppressMessages(library(pkg, character.only = T)))
+}
+
+
+DATA_DIR <- "/stornext/Home/data/allstaff/w/whitfield.h/data/_datasets/sc/Smyth_HumanBrCa"
+
+
+Samples <- c("ER-0114-T3", "ER-0360", "ER-0167-T", "ER-0151", "ER-0032", "ER-0125",
+             "ER-0043-T", "ER-0025", "ER-0001", "ER-0042", "ER-0319", "ER-0040-T", "ER-0163")
+SamplesComb <- gsub("-","_",Samples)
+
+### Readin the data
+DGE <- paste0("dge_", SamplesComb)
+DD <- paste0("dd_", SamplesComb)
+for(i in 1:length(SamplesComb)) {
+  eval(call("<-", as.name(DGE[i]), 
+            read10X(path=paste0("../Data/",Samples[i]), DGEList=TRUE)))
+}
+
+files=list.files(DATA_DIR)[grepl(".tsv.gz",list.files(DATA_DIR))]
+library(data.table)
+dt = fread("data.csv.gz")
+
+xx=read10xCounts(DATA_DIR, sample.names = c("GSM4909253_N-PM0092-Total-"),compressed=TRUE,version="3")

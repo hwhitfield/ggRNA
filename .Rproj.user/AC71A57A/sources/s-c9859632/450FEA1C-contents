@@ -1,0 +1,8 @@
+#' @import scran
+#' @import scater
+#' @import ggplot2
+#' @importFrom gridExtra grid.arrange
+#' @importFrom Matrix t which colSums rowSums colMeans
+#' @importFrom SingleCellExperiment reducedDim sizeFactors
+
+NULL

@@ -1,0 +1,957 @@
+
+
+
+
+
+### CUSTOMISING AESTHETICS --------------------
+
+
+#' GetLegend
+#'
+#' Returns a gtable containing a custom colour legend based on col_dict
+#'
+#' @param col_dict Named character vector, where values are hex colours
+#' @param lab_str Character string, title of legend
+#' @param title_pos c("top", "bottom") for vertical, c("left", "right") for horiztonal
+#' @param n_row Integer, number of rows
+#' @param by_row TRUE or FALSE
+#' @param rl Relative text size
+#' @param buffer Legend margin i.e. margin(t,r,b,l)
+#'
+#' @return A gtable object holding just the legend (from cowplot::get_legend())
+#' @export
+#' @import cowplot
+#'
+
+GetLegend <- function(col_dict, lab_str, title_pos="top",
+                      n_row=1, by_row=TRUE,rl=1,leg_size=4, buffer=margin(0,0,0,0),...){
+
+  legend_dat_themes <- data.frame(Sample=factor(names(col_dict), levels=names(col_dict)),
+                                  prop=rep(1, length(col_dict)), colours = as.vector(col_dict))
+  legend_bar <- ggplot(legend_dat_themes, aes(x=Sample, y=prop, fill=Sample)) +
+    geom_bar(position="dodge", stat="identity")+
+    scale_fill_manual(values=col_dict)+theme_bw()+
+    theme(legend.text=element_text(size = rel(rl)*1.1),
+          legend.title = element_text(size = rel(rl)*1.3),legend.margin = buffer)+
+    guides(fill=guide_legend(nrow=n_row,byrow=by_row, override.aes = list(size=leg_size),title.position=title_pos,...),
+           color = guide_legend(override.aes = list(size = leg_size)),
+           title.position=title_pos)+
+    labs(fill=lab_str)
+  legend_themes <- cowplot::get_legend(legend_bar)
+  return(legend_themes)
+}
+
+
+#' GetShapeLegend
+#'
+#' Returns a gtable containing a custom colour legend based on shape_dict
+#'
+#' @param shape_dict A character vector indicating the legend names for each shape. If named vector, values should be shape numbers
+#' @param lab_str A character string indicating legend title
+#' @param title_pos A character string indicating legend position c("top", "bottom")
+#' @param n_row Integer, number of rows in legend
+#' @param by_row TRUE or FALSE
+#' @param rl Relative size
+#' @param leg_size Integer size of legend keys
+#' @param buffer Legend margin i.e. margin(t,r,b,l)
+#' @param ...
+#'
+#' @return A gtable object holding just the legend (from cowplot::get_legend())
+#' @export
+#'
+#' @import cowplot
+#'
+#' @examples
+#'
+#' GetShapeLegend(setNames(c(19, 15), c("A", "B")), "Sample")
+#' GetShapeLegend(dge_x$samples$Sample, "Sample")
+#'
+GetShapeLegend <- function(shape_dict, lab_str, title_pos="top",
+                         n_row=1, by_row=TRUE,rl=1,leg_size=4, buffer=margin(0,0,0,0),...){
+
+  if (is.null(names(shape_dict))){
+    shape_dict <- getShapes(unique(as.vector(shape_dict)))
+  }
+
+  legend_dat_themes <- data.frame(Sample=factor(names(shape_dict), levels=names(shape_dict)),
+                                  prop=rep(1, length(shape_dict)), shape_by = as.character(as.vector(shape_dict)))
+  legend_plot <- ggplot(legend_dat_themes, aes(x=Sample, y=prop, shape=shape_by)) +
+    geom_point()+scale_shape_manual(values=shape_dict)+theme_bw()+
+    theme(legend.text=element_text(size = rel(rl)*1.1),
+          legend.title = element_text(size = rel(rl)*1.3),legend.margin = buffer)+
+    guides(shape=guide_legend(nrow=n_row,byrow=by_row, override.aes = list(size=leg_size),title.position=title_pos,...),
+           title.position=title_pos)+labs(shape=lab_str)
+  legend_themes <- cowplot::get_legend(legend_plot)
+  return(legend_themes)
+}
+
+
+
+#' theme_blank
+#'
+#' Add a blank theme to ggplot
+#'
+#' @param legend Legend position, defaults to "none"
+#'
+#' @return A ggplot theme
+#' @export
+#'
+
+theme_blank <- function(legend="none"){
+
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.border=element_blank(),
+        axis.ticks = element_blank(), axis.text=element_blank(),
+        axis.title = element_blank(), axis.line = element_blank(),
+        legend.position = legend)
+}
+
+
+
+
+
+
+
+### --- GGPLOT VERSIONS OF DIAGNOSTIC PLOTS
+
+#' MDS2gg
+#'
+#' Converts Limma's MDS into ggplot, input should be DGEList object (edgeR)
+#'
+#' @param DGE_x DGEList object
+#' @param col_str Character string indicating column of DGE_x$samples to colour points by
+#' @param col_pal Named character vector to be used as colour palette, where values are hex colours and names match values of col_str
+#' @param shape_str (Optional) Character string indicating column of DGE_x$samples to shape points by
+#' @param shape_pal (Optional) Named character vector to indicate shape legend, where names match values of shape_str
+#'
+#' @return
+#' @export
+#'
+#' @importFrom limma plotMDS
+#' @importFrom  edgeR cpm rpkm
+#' @importFrom stringr str_to_title
+
+MDS2gg <- function(DGE_x, col_str,col_pal=NULL, shape_str=NULL, shape_pal=NULL){
+
+  col_title <- str_to_title(col_str)
+
+  if (is.null(col_pal)){
+    col_pal <- GetColPal(unique(as.vector(DGE_x$samples[[col_str]])))
+  }
+
+  if (!(is.null(shape_str))){
+
+    shape_title <- str_to_title(shape_str)
+    if (is.null(shape_pal)){
+      shape_pal <- getShapes(unique(as.vector(DGE_x$samples[[shape_str]])))
+    }
+
+    MDS_dat <- limma::plotMDS(edgeR::cpm(DGE_x, log=TRUE, prior.count = 2),
+                              col=as.vector(col_pal[as.vector(DGE_x$samples[[col_str]])]),
+                              pch=as.vector(shape_pal[as.vector(DGE_x$samples[[shape_str]])]),
+                              cex = 1.6, cex.lab=0.8, cex.axis=0.6, tck=-0.02,mgp = c(1.5, 0.3, 0), plot=FALSE)
+    plot_dat <- data.frame(ColBy=as.vector(DGE_x$samples[[col_str]]),
+                           ShapeBy=as.vector(DGE_x$samples[[shape_str]]),
+                           Dim1=MDS_dat$x,
+                           Dim2=MDS_dat$y)
+    ggplot(data=plot_dat, aes(x=Dim1, y=Dim2, color=ColBy, shape=ShapeBy))+geom_point(size=4)+
+      scale_color_manual(name=col_title, values=col_pal)+scale_shape_manual(name=shape_title,values=shape_pal)+theme_bw()+
+      theme(panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            legend.direction = "vertical", legend.box = "vertical")
+  } else {
+    MDS_dat <- limma::plotMDS(edgeR::cpm(DGE_x, log=TRUE, prior.count = 2),
+                              col=as.vector(col_pal[as.vector(DGE_x$samples[[col_str]])]),
+                              cex = 1.6, cex.lab=0.8, cex.axis=0.6, tck=-0.02,mgp = c(1.5, 0.3, 0), plot=FALSE)
+    plot_dat <- data.frame(ColBy=as.vector(DGE_x$samples[[col_str]]),
+                           Dim1=MDS_dat$x,
+                           Dim2=MDS_dat$y)
+    ggplot(data=plot_dat, aes(x=Dim1, y=Dim2, color=ColBy))+geom_point(size=4)+
+      scale_color_manual(name=col_title, values=col_pal)+theme_bw()+
+      theme(panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            legend.direction = "vertical", legend.box = "vertical")
+  }
+
+}
+
+
+
+#' ggRLE
+#'
+#' Calculates RLE plot and returns ggplot object
+#'
+#' @param dat_x DGEList object or subsettable data.frame or matrix object
+#' @param annot DGEList$samples or data.frame object containing sample annotations, including col_str
+#' @param col_str Character string indicating column of annot to colour boxplots by
+#' @param col_pal Named character vector to use as colour palette, where values are hex colours and names match col_str
+#' @param isLog Defaults to TRUE, set to FALSE if dat_x is not log-transformed
+#' @param isLarge Defaults to TRUE, if FALSE removes boxplot whiskers
+#' @param ylim Numeric vector indicating y-axis limits to plot, defaults to c(-2,2)
+#' @param zero_line Defaults to TRUE, if FALSE does not plot line at y=0
+#' @param zero_col Defaults to "skyblue", indicating colour for zero_line
+#' @param medPoint Defaults to FALSE, if TRUE plots the median value as a point
+#' @param whisk Defaults to 1.5, numeric indicating length of whiskers as multiple of IQR
+#'
+#' @return
+#' @export
+#'
+#' @import dplyr
+#' @importFrom stringr str_to_title
+#'
+#' @examples
+#' ggRLE(dge_x, dge_x$samples, "Treatment", isLog = FALSE)
+#' ggRLE(dge_x$logCPM, dge_x$samples, "Patient", isLog = TRUE)
+
+
+ggRLE <- function(dat_x, annot, col_str, col_pal=NULL, isLog=TRUE,isLarge=FALSE,
+                  ylim = c(-2,2),zero_line=TRUE, zero_col="skyblue", medPoint=FALSE, whisk=1.5){
+
+  col_title <- str_to_title(col_str)
+
+  if (!(setequal(colnames(dat_x), rownames(annot)))){
+    message("Make sure annot rownames match dat_x sample names")
+  }
+
+  if (!(isLog) | class(dat_x)[1] == "DGEList"){
+    dat_x <- log2(dat_x+1)
+  }
+
+  if (is.null(col_pal)){
+    col_pal <- GetColPal(unique(as.vector(annot[[col_str]])))
+  }
+
+  ## Subset to common sample names
+  annot <- annot[order(as.vector(annot[[col_str]])), , drop = F]
+  annot$ColourBy <- as.vector(annot[[col_str]])
+  annot$Sample <- rownames(annot)
+  dat_x <- dat_x[, rownames(annot)]
+
+  ## RLE boxplots
+  rle <- dat_x - rowMedians(dat_x)
+  rleLong <- reshape2::melt(rle, value.name = "RLE", varnames = c("genes", "Sample"))
+
+  rleLong <- merge(data.table::data.table(varhandle::unfactor(rleLong)),  # faster merging
+                   data.table::data.table(varhandle::unfactor(annot)),
+                   by = "Sample", sort=F)
+
+  ## Calculate the median of the RLE boxplots:
+  rleLong <- rleLong %>%
+    dplyr::group_by(Sample) %>%
+    dplyr::mutate(MedRLE = median(RLE)) %>%
+    dplyr::ungroup() %>%
+    data.frame()
+  rleLong$Sample <- factor(rleLong$Sample , levels=unique(rleLong$Sample))
+
+  ## Remove Whiskers of the boxplots if the sample size is very large
+  if(isLarge){
+    whisk=0
+  }
+
+  if (medPoint){
+    gg <- ggplot(rleLong, aes(x = Sample, y = RLE, fill = ColourBy))+
+      stat_boxplot(geom = "errorbar", width = 0.3)+
+      geom_boxplot(outlier.shape = NA, coef=whisk)+
+      geom_point(data = rleLong[! duplicated(rleLong$Sample), ],
+                 aes(x = Sample, y = MedRLE, fill = ColourBy),
+                 size = 2, shape = 21, colour = "black", lwd = 2)+
+      scale_fill_manual(name=col_title,values = col_pal)+
+      scale_y_continuous(name = "RLE",limits = ylim)+theme_bw()+
+      theme(panel.grid.minor = element_blank(),
+            axis.ticks.x = element_blank(),
+            axis.text.x = element_blank())
+  } else {
+    gg <- ggplot(rleLong, aes(x = Sample, y = RLE, fill = ColourBy))+
+      stat_boxplot(geom = "errorbar", width = 0.3)+
+      geom_boxplot(outlier.shape = NA,coef=whisk)+
+      scale_fill_manual(name=col_title,values = col_pal)+
+      scale_y_continuous(name = "RLE",limits = ylim)+theme_bw()+
+      theme(panel.grid.minor = element_blank(),
+            axis.ticks.x = element_blank(),
+            axis.text.x = element_blank())
+  }
+
+  if (zero_line){
+    gg <- gg + geom_hline(yintercept = 0, col = zero_col, lwd = 1)+
+            theme(panel.grid.major=element_blank())
+  }
+  return(gg)
+}
+
+
+#' ggPCA
+#'
+#' Calculates PCA using calc_pca plots using ggplot
+#'
+#' @param dat_x A subsettable data.frame or matrix object
+#' @param annot A data.frame object containing sample annotations, including col_str
+#' @param col_str Character string indicating column of annot to colour points by
+#' @param col_pal Named character vector to use as colour palette, where values are hex colours and names match col_str
+#' @param shape_str Character string indicating column of annot to shape points by
+#' @param shape_pal Named character vector indicating shape legend, where names match shape_str
+#' @param isLog Defaults to TRUE, set to FALSE if dat_x is not log-transformed to scale prior to PCA calculation
+#' @param centre_scale TRUE or FALSE should data be centred by scale() prior to PCA calculation?
+#' @param point_size Integer indicating point size  to provide ggplot
+#' @param k Defaults to 2, indicates how many principle components to plot
+#' @param k_vec Vector indicating which principle components to plot i.e. c(1,3) for k=3
+#'
+#' @return ggplot object
+#' @export
+#'
+#' @importFrom stringr str_to_title
+#'
+#' @examples
+#' i.e.
+#' ggPCA(dge_obj$logCPM, Fig4_dge$samples, col_str="Treatment", shape_str = "Patient",isLog=TRUE, k=3)
+#'
+#' Or to plot specific PCs
+#' ggPCA(dge_obj$logCPM, Fig4_dge$samples, col_str="Treatment", shape_str = "Patient",isLog=TRUE, k=3, k_vec=c(1,3))
+#'
+ggPCA <- function(dat_x, annot, col_str, col_pal=NULL,
+                  shape_str=NULL, shape_pal=NULL,
+                  isLog=TRUE, centre_scale=TRUE,
+                  point_size=4, k=2, k_vec=NULL){
+
+  if (!(setequal(colnames(dat_x), rownames(annot)))){
+    message("Make sure annot rownames match dat_x sample names")
+  }
+
+  if (is.null(col_pal)){
+    col_pal <- GetColPal(unique(as.vector(annot[[col_str]])))
+  }
+
+  ## Organise annotations
+  annot$ColourBy <- as.vector(annot[[col_str]])
+  annot$Sample <- rownames(annot)
+  dat_x <- dat_x[, rownames(annot)]
+  col_title <- str_to_title(col_str)
+
+  ## PCA
+  PC_dat <- calc_pca(dat_x, is.log=isLog, centre=centre_scale)
+
+  ## Get plot data
+  plot_dat <- as.data.frame(do.call(cbind,
+                                    lapply(1:k, function(x){PC_dat$sing.val$u[,x]})))
+  colnames(plot_dat) <- paste0("PC", 1:k)
+  plot_dat$Sample <- colnames(dat_x)
+
+  ## Merge annotations with PCs
+  plot_dat_merge <- merge(data.table::data.table(plot_dat),  # faster merging
+                          data.table::data.table(annot),
+                          by = "Sample", sort=F)
+
+  if (k==2){
+    k_vec=c(1, 2)
+
+    PCplot <- plotPCs(paste0("PC", k_vec[[1]]), paste0("PC", k_vec[[2]]),
+                      plot_dat_merge, point_size, shape_str, col_title,
+                      col_pal, shape_pal)
+    PCplot <- PCplot + labs(x=paste0(k_x," (", PC_dat$var[[k_vec[[1]]]],"%)"),
+                            y=paste0(k_y," (", PC_dat$var[[k_vec[[2]]]],"%)"))
+    return(PCplot)
+
+  } else {
+
+    ## For k > 2
+
+    if (is.null(k_vec)){
+      k_vec =  1:k
+    }
+
+    gg_dat <- reshape2::melt(plot_dat, value.name="weight", id.vars="Sample", variable.name="PC")
+    gg_dat <- gg_dat[gg_dat$PC %in% paste0("PC",k_vec),]
+
+    all_combinations <- combn(as.vector(unique(gg_dat$PC)),2)
+    plot_lst <- lapply(1:ncol(all_combinations), function(i){
+      plotPCs(all_combinations[1, i], all_combinations[2, i],
+              plot_dat_merge, point_size, shape_str, col_title,
+              col_pal, shape_pal)
+    })
+    names(plot_lst) <- unlist(lapply(1:ncol(all_combinations), function(i){
+      paste0(all_combinations[1, i],"_vs_",all_combinations[2, i])}))
+
+    ## -- If plotting specific PCs
+    if (length(k_vec) < length(1:k)){
+
+      ## Add variance explained by each PC
+      plot_rows <- lapply(1:ncol(all_combinations), function(i){
+        k_1 <- as.integer(gsub("PC","",all_combinations[1, i]))
+        k_2 <- as.integer(gsub("PC","",all_combinations[2, i]))
+        PCplot <- plot_lst[[paste0("PC",as.character(k_1),"_vs_PC",as.character(k_2))]]
+        PCplot + labs(x=paste0("PC",as.character(k_1)," (", PC_dat$var[[k_1]],"%)"),
+                      y=paste0("PC",as.character(k_2)," (", PC_dat$var[[k_2]],"%)"))
+      })
+      names(plot_rows) <- unlist(lapply(1:ncol(all_combinations), function(i){
+        paste0(all_combinations[1, i],"_vs_",all_combinations[2, i])}))
+
+      ## Add shared legend to bottom
+      my_leg <- GetLegend(col_pal, col_title)
+      plot_rows <- lapply(plot_rows, function(plot_x){plot_x+theme(legend.position = "none")})
+
+      ## Plot!
+      return(cowplot::plot_grid(cowplot::plot_grid(plotlist=plot_rows, byrow=TRUE),
+                                my_leg,nrow=2, rel_heights = c(6,1)))
+
+    } else {
+
+      ## -- If plotting all PC combinations
+
+      ### Co-ordinate grid so that descending row is PC1->
+      plot_lst_rows <- lapply(1:(k-1), function(row_j){
+        plot_lst[names(plot_lst)[grepl(paste0("PC", row_j,"_vs"),names(plot_lst))]]
+      })
+
+      ### Add NULL plots
+      plot_rows <- c()
+      for (x in 1:length(plot_lst_rows)){
+        numbNull <- k-1-length(plot_lst_rows[[x]])
+        if (numbNull > 0){
+          plot_rows <- c(plot_rows,vector(mode = 'list', length = numbNull),plot_lst_rows[[x]])
+        } else {
+          plot_rows <- c(plot_rows,plot_lst_rows[[x]])
+        }}
+
+      ## And remove legends
+      plot_rows <- lapply(plot_rows, function(plot_x){plot_x+theme(legend.position = "none")})
+
+      ## Plot!
+      return(cowplot::plot_grid(plotlist=plot_rows,
+                                ncol=k-1, nrow=length(plot_lst_rows), byrow=TRUE))
+    }
+
+
+  }
+}
+
+
+
+
+#' calc_pca
+#'
+#' Calculates PCA for input data
+#'
+#' @param data data.frame or matrix object
+#' @param is.log TRUE or FALSE are the data already log-transformed?
+#' @param centre TRUE or FALSE should the data be centred by scale()
+#'
+#' @return List containing SVD from PCA calculation (sing.val) and percent variance (var)
+#' @export
+#'
+
+calc_pca <- function(data, is.log, centre) {
+
+  if(is.log == TRUE){
+    data <- data
+  }else{
+    data <- log2(data + 1)
+  }
+  svd <- svd(apply(data, 1, function(x) scale(x, scale = FALSE, center = centre)))
+  percent <- svd$d^2/sum(svd$d^2)*100
+  percent <- sapply(seq_along(percent), function(i) {round(percent[i], 2)})
+  return(list(sing.val = svd, var = percent))
+
+  ## These are all the same PCA
+  # 1)
+  # PlotMyPCA(LEGO_DGE_ALL$batch_corrected, LEGO_DGE_ALL$samples$clone, "bottomright", "", LOG.str=TRUE)
+  # ^^ I think this one filters data by variance before running PCA ^^
+  # 2)
+  # pcs_ALL_t <- calc_pca(LEGO_DGE_ALL$batch_corrected, is.log=TRUE, centre=TRUE)
+  # plot(pcs_ALL_t$sing.val$u[,1], pcs_ALL_t$sing.val$u[,2])
+  # 3)
+  # pca<-prcomp(t(LEGO_DGE_ALL$batch_corrected))
+  # plot(as.data.frame(pca$x)$PC1, as.data.frame(pca$x)$PC2)
+}
+
+
+
+#' plotPCs
+#'
+#' Helper function for ggPCA() that plots individual panels
+#'
+#' @param k_x Principle component to be plot on x-axis
+#' @param k_y Principle component to be plot on y-axis
+#' @param dat_merge A data.frame object from ggPCA() containing PCs and sample annotations
+#' @param col_title Character string indicating column of annot to colour points by
+#' @param col_pal Named character vector to use as colour palette, where values are hex colours and names match col_str
+#' @param shape_str Character string indicating column of annot to shape points by
+#' @param shape_pal Named character vector indicating shape legend, where names match shape_str
+#' @param point_size Integer indicating point size  to provide ggplot
+
+#' @return ggplot object
+#' @export
+#'
+#' @importFrom stringr str_to_title
+#'
+
+plotPCs <- function(k_x, k_y, dat_merge, point_size,
+                    shape_str, col_title, col_pal, shape_pal){
+  dat_merge$PC_x <- dat_merge[[k_x]]
+  dat_merge$PC_y <- dat_merge[[k_y]]
+
+  if(!(is.null(shape_str))){
+    dat_merge$ShapeBy <- as.vector(dat_merge[[shape_str]])
+    shape_title <- str_to_title(shape_str)
+    if (is.null(shape_pal)){
+      shape_pal <- getShapes(unique(as.vector(dat_merge$ShapeBy)))
+    }
+    return(ggplot(dat_merge, aes(x=PC_x, y=PC_y, colour=ColourBy, shape=ShapeBy))+geom_point(size=point_size)+
+             scale_color_manual(name=col_title, values=col_pal)+
+             scale_shape_manual(name=shape_title,values=shape_pal)+theme_bw()+
+             theme(panel.grid.minor = element_blank(),
+                   panel.grid.major = element_blank(),
+                   legend.direction = "vertical", legend.box = "vertical")+labs(x=k_x, y=k_y))
+  } else {
+    return(ggplot(dat_merge, aes(x=PC_x, y=PC_y, colour=ColourBy))+geom_point(size=point_size)+
+             scale_color_manual(name=col_title, values=col_pal)+theme_bw()+
+             theme(panel.grid.minor = element_blank(),
+                   panel.grid.major = element_blank(),
+                   legend.direction = "vertical", legend.box = "vertical")+ labs(x=k_x, y=k_y))
+  }
+
+}
+
+
+
+### --- ORGANISING MULTIPLE PLOTS
+
+
+#' ExtractLegends
+#'
+#' Used by ggMulti() to extract legends and orient properly for cowplot::plot_grid()
+#'
+#' @param plot_x ggplot object
+#' @param n_row Integer, number of rows of keys in each legend
+#' @param ...
+#'
+#' @return A gtable object holding just the legend or NULL if there is no legend (from cowplot::get_legend())
+#' @export
+#'
+#' @import cowplot
+#'
+#' @examples
+#'
+#' legend_list <- list(ExtractLegends(A),ExtractLegends(B))
+#' ggMulti(list(A,B),leg_lst=legend_list,leg_nrow=1)
+#'
+#' legend_list <- list(ExtractLegends(A),ExtractLegends(B))
+#'
+
+ExtractLegends <- function(plot_x, n_row=2,...){
+  plot_legends <- setdiff(names(plot_x$mapping), c("x","y"))
+
+  guide_names <- list()
+  for (i_leg in plot_legends){
+    guide_names[[i_leg]] <- guide_legend(nrow=n_row,...)
+  }
+  return(cowplot::get_legend(plot_x + guides(guide_names)))
+}
+
+
+#' ggMulti
+#'
+#' @param plot_lst List of ggplots to plot
+#' @param leg_to_plot Character vector or vector of indexes indicating the plots in `plot_lst` to include legends for. If leg_lst=NULL, leg_to_plot is not used
+#' @param leg_lst List of legends (gtable objects) from cowplot::get_legend() to include
+#' @param n_col Integer indicating the number of columns that `plot_lst` should be organised into
+#' @param leg_title_pos Character string indicating position of legend titles within each legend gtable object, one of "top", "bottom" etc.
+#' @param leg_size Integer size of legend keys
+#' @param leg_nrow Integer, number of rows of keys in each legend, passed on to `ExtractLegends()`
+#' @param plot_ratio Integer value that will be the height of `cowplot::plot_grid(plot_lst)` relative to the single row of legends at the bottom
+#' @param ...
+#'
+#' @return
+#' @export
+#'
+#' @examples
+#'
+#' ## Only plot legend for first plot
+#' ggMulti(list(A,B),leg_to_plot=c(1),leg_nrow=1)
+#'
+#' ## Include two custom legends
+#' ggMulti(list(A, B), leg_lst = list(GetLegend(Colour_values,"CellType", n_row=2),
+#'                                    GetShapeLegend(unique(dge_x$samples$Sample), "Sample")))
+#'
+
+ggMulti <- function(plot_lst, leg_to_plot=NULL, leg_lst =NULL,n_col=2,
+                    leg_title_pos="top", leg_size=4, leg_nrow=2,
+                    plot_ratio=6,...){
+
+  if (!(is.null(names(plot_lst)))){
+    label_vec <- names(plot_lst)
+  } else {
+    label_vec <- rep("", length(plot_lst))
+  }
+
+  if (is.null(leg_lst)){
+    leg_lst <- lapply(leg_to_plot, function(name_x){
+      ExtractLegends(plot_lst[[name_x]],n_row=leg_nrow, byrow=TRUE,override.aes = list(size=leg_size),title.position=leg_title_pos)
+    })
+  }
+
+  plot_lst <- lapply(plot_lst, function(plot_x){plot_x+theme(legend.position="none")})
+
+  return(cowplot::plot_grid(
+    cowplot::plot_grid(plotlist = plot_lst,ncol=n_col,label_fontface ="plain",...),
+    cowplot::plot_grid(plotlist = leg_lst, nrow=1),
+    nrow=2, rel_heights = c(plot_ratio,1)))
+}
+
+
+
+
+
+
+### --- UPSET PLOT
+
+#' UpsetPlot_wBars
+#'
+#' Wrapper function for ComplexUpset::upset() to plot binarised continuous variables, includes proportional bar plots
+#'
+#' @param DATA SingleCellExperiment object or data.frame, data object containing continuous variables that can be subset. Rows are observations, columns are variables.
+#' @param col_names Character vector of column names, often gene names
+#' @param bar_col Character string of column in `DATA` used to plot proportional bars, should be a discrete/character variable
+#' @param name_str Character string, a general name for the variables in `col_names`
+#' @param col_pal Named character vector, values should be hex colour values and names should correspond to `DATA$bar_col`
+#'
+#' @return ComplexUpset::upset() object
+#' @export
+#'
+#' @import ComplexUpset
+#'
+UpsetPlot_wBars <- function(DATA, col_names, bar_col, name_str = "", col_pal=NULL){
+
+  require(ComplexUpset)
+
+  ### --- Prep data
+  if (class(DATA)[1]=="SingleCellExperiment"){
+    bar_vec <- DATA[[bar_col]]
+    names(bar_vec) <- colnames(DATA)
+    DATA <- DATA[rownames(DATA) %in% col_names,]
+    DATA <- DATA[, colSums(logcounts(DATA))>0]
+    DATA <- as.data.frame(as.matrix(logcounts(DATA)))
+
+    DATA_binary <- DATA > 0
+    DATA_binary <- data.frame(t(DATA_binary))
+    DATA_binary$Sample <- as.vector(bar_vec[rownames(DATA_binary)])
+
+
+  } else{
+    DATA <- DATA[, colnames(DATA) %in% c(col_names,bar_col)]
+    DATA_binary <- DATA > 0
+  }
+
+  if (is.null(col_pal)){
+    col_pal <- GetColPal(unique(DATA_binary$Sample))
+  }
+
+  ### --- Plot
+  return(ComplexUpset::upset(data=DATA_binary, intersect=col_names, name=name_str, width_ratio=0.26,
+                             annotations = list(
+                               '% from each sample'=list(
+                                 aes=aes(x=intersection, fill=Sample),
+                                 geom=list(
+                                   geom_bar(stat='count', position='fill'),
+                                   theme(legend.position = "top"),
+                                   scale_y_continuous(labels=scales::percent_format()),
+                                   scale_fill_manual(values = col_pal[as.character(unique(DATA_binary$Sample))])
+                                 )
+                               )
+                             )))
+
+}
+
+
+
+
+
+
+### --- GENE LOADING PYRAMID PLOT
+
+
+#' Title
+#'
+#' @param TOPTAG_Object_x
+#' @param TOPTAG_Object_y
+#' @param NAME_x_str
+#' @param NAME_y_str
+#' @param GeneList_HGNC
+#' @param UP_str
+#' @param DOWN_str
+#' @param UP_col
+#' @param DOWN_col
+#'
+#' @return
+#' @export
+#'
+#' @examples
+GenePyramid_2Datsets <- function(TOPTAG_Object_x, TOPTAG_Object_y,
+                                 NAME_x_str, NAME_y_str, GeneList_HGNC,
+                                 UP_str="UP", DOWN_str="DOWN",
+                                 UP_col="#679089", DOWN_col="#A18FBA"){
+
+  ## Toptags objects are created with `topTags` from edgeR
+  ## Columns include gene ids, logFC, FDR. Pvalue etc.
+
+  ## This code works on output downstream of my EdgeRProcessing function/s from `PipelineFunctions.R`
+
+  ymax <- 6
+  ymin <- -6.5
+  col_dict <-  c(UP_str = UP_col, DOWN_str = DOWN_col)
+  names(col_dict) <- c(UP_str, DOWN_str)
+
+  THEME <- theme_minimal() + theme(panel.border = element_blank(),
+                                    panel.grid.major = element_blank(),
+                                    panel.grid.minor = element_blank(),
+                                    axis.line.x = element_line(colour = "black"),
+                                    axis.ticks.y = element_blank(),
+                                    axis.line.y = element_blank(),
+                                    axis.title.y = element_blank(),
+                                    axis.text.y = element_text(color="black"))
+
+  THEME <- theme(panel.grid.minor = element_blank(),
+                 panel.grid.major = element_blank(),
+                 axis.text.y = element_blank(),
+                 axis.title.y = element_blank(),
+                 plot.title = element_text(size = 10, hjust = 0.5))
+
+
+  ## Merge datasets
+  logFC_vector_X <- TOPTAG_Object_x$logFC[match(GeneList_HGNC, TOPTAG_Object_x$hgnc_symbol)]
+  logFC_vector_X[is.na(logFC_vector_X)] <- 0
+  FDR_vector_X <- TOPTAG_Object_x$FDR[match(GeneList_HGNC, TOPTAG_Object_x$hgnc_symbol)]
+  FDR_vector_X[is.na(FDR_vector_X)] <- 1
+  logFC_vector_Y <- TOPTAG_Object_y$logFC[match(GeneList_HGNC, TOPTAG_Object_y$hgnc_symbol)]
+  logFC_vector_Y[is.na(logFC_vector_Y)] <- 0
+  FDR_vector_Y <- TOPTAG_Object_y$FDR[match(GeneList_HGNC, TOPTAG_Object_y$hgnc_symbol)]
+  FDR_vector_Y[is.na(FDR_vector_Y)] <- 1
+
+  DIRECTION_idx_1 <- logFC_vector_X >= 0
+  DIRECTION_idx_2 <- logFC_vector_Y >= 0
+  DIRECTION_idx_1 <- replace(DIRECTION_idx_1, DIRECTION_idx_1==TRUE, UP_str)
+  DIRECTION_idx_1 <- replace(DIRECTION_idx_1, DIRECTION_idx_1==FALSE, DOWN_str)
+  DIRECTION_idx_2 <- replace(DIRECTION_idx_2, DIRECTION_idx_2==TRUE, UP_str)
+  DIRECTION_idx_2 <- replace(DIRECTION_idx_2, DIRECTION_idx_2==FALSE, DOWN_str)
+
+  ggdat <- data.frame(Genes= rep(GeneList_HGNC, 2) ,
+                      logFC = c(abs(logFC_vector_X), abs(logFC_vector_Y)),
+                      # LEGOlogFC = abs(LEGO_logFC_vector),
+                      # BROCADElogFC = abs(BROCADE_logFC_vector),
+                      Direction = c(DIRECTION_idx_1, DIRECTION_idx_2),
+                      # LEGOdir =DIRECTION_idx_1,
+                      #BROCADEdir =DIRECTION_idx_2
+                      log10FDR = c(-1* log10(FDR_vector_X), -1* log10(FDR_vector_Y)),
+                      Dataset = c(rep(NAME_x_str, length(GeneList_HGNC)), rep(NAME_y_str, length(GeneList_HGNC)))
+  )
+
+  gg <- ggplot(ggdat, aes(x=reorder(Genes, logFC))) +
+    geom_bar(data=ggdat[ggdat$Dataset==NAME_x_str,],  aes(y=logFC, fill=Direction, alpha=log10FDR), stat="identity") +
+    geom_bar(data=ggdat[ggdat$Dataset==NAME_y_str,],  aes(y=-logFC, fill=Direction, alpha=log10FDR), stat="identity") +
+    geom_hline(yintercept=0, colour="white", lwd=1) +
+    coord_flip(ylim=c(ymin,ymax)) + scale_y_continuous(breaks=seq(-6,6,2), labels=c(6,4,2,0,2,4,6))+ggtitle(paste(NAME_x_str, NAME_y_str, sep="                                                 "))+
+    labs(x="Genes")+scale_fill_manual("Direction", values = col_dict)+scale_alpha(range = c(0.1, 1), guide=FALSE)
+  plot(gg)
+}
+
+
+#' Title
+#'
+#' @param TOPTAG_Object_x
+#' @param TOPTAG_Object_y
+#' @param NAME_x_str
+#' @param NAME_y_str
+#' @param GeneList_HGNC
+#' @param UP_str
+#' @param DOWN_str
+#' @param UP_col
+#' @param DOWN_col
+#' @param return
+#'
+#' @return
+#' @export
+#'
+#' @examples
+GenePyramid_2Datsets_v2 <- function(TOPTAG_Object_x, TOPTAG_Object_y,
+                                    NAME_x_str, NAME_y_str,
+                                    GeneList_HGNC,
+                                    UP_str="UP", DOWN_str="DOWN",
+                                    UP_col="#679089", DOWN_col="#A18FBA",
+                                    return=FALSE){
+
+
+
+  ## Toptags objects are created with `topTags` from edgeR
+  ## Columns include gene ids, logFC, FDR. Pvalue etc.
+
+  ## This code works on output downstream of my EdgeRProcessing function/s from `PipelineFunctions.R`
+
+
+
+  col_dict <-  c(UP_str = UP_col, DOWN_str = DOWN_col)
+  names(col_dict) <- c(UP_str, DOWN_str)
+
+
+  THEME <- theme(panel.grid.minor = element_blank(),
+                 panel.grid.major = element_blank(),
+                 axis.text.y = element_blank(),
+                 axis.title.y = element_blank(),
+                 axis.ticks.length = unit(0.001, "pt"),
+                 plot.title = element_text(size = 10, hjust = 0.5))
+
+  ## Get visually pretty gene ordering
+  ## order of X takes precedent
+  x <- TOPTAG_Object_x[TOPTAG_Object_x$hgnc_symbol %in% GeneList_HGNC,]
+  X_order <- x[order(-x$logFC),]$hgnc_symbol
+  not_X <- GeneList_HGNC[!(GeneList_HGNC %in% TOPTAG_Object_x$hgnc_symbol)]
+  y <- TOPTAG_Object_y[TOPTAG_Object_y$hgnc_symbol %in% not_X,]
+  Y_order <- y[order(-y$logFC),]$hgnc_symbol
+  Gene_order <- c(X_order, Y_order)
+
+  ## Merge datasets
+  logFC_vector_X <- TOPTAG_Object_x$logFC[match(Gene_order, TOPTAG_Object_x$hgnc_symbol)]
+  logFC_vector_X[is.na(logFC_vector_X)] <- 0
+  FDR_vector_X <- TOPTAG_Object_x$FDR[match(Gene_order, TOPTAG_Object_x$hgnc_symbol)]
+  FDR_vector_X[is.na(FDR_vector_X)] <- 1
+  logFC_vector_Y <- TOPTAG_Object_y$logFC[match(Gene_order, TOPTAG_Object_y$hgnc_symbol)]
+  logFC_vector_Y[is.na(logFC_vector_Y)] <- 0
+  FDR_vector_Y <- TOPTAG_Object_y$FDR[match(Gene_order, TOPTAG_Object_y$hgnc_symbol)]
+  FDR_vector_Y[is.na(FDR_vector_Y)] <- 1
+
+  ymax <- ceiling(max(c(abs(logFC_vector_X), abs(logFC_vector_Y))))
+
+  DIRECTION_idx_1 <- logFC_vector_X >= 0
+  DIRECTION_idx_2 <- logFC_vector_Y >= 0
+  DIRECTION_idx_1 <- replace(DIRECTION_idx_1, DIRECTION_idx_1==TRUE, UP_str)
+  DIRECTION_idx_1 <- replace(DIRECTION_idx_1, DIRECTION_idx_1==FALSE, DOWN_str)
+  DIRECTION_idx_2 <- replace(DIRECTION_idx_2, DIRECTION_idx_2==TRUE, UP_str)
+  DIRECTION_idx_2 <- replace(DIRECTION_idx_2, DIRECTION_idx_2==FALSE, DOWN_str)
+
+  ggdat <- data.frame(Genes= rep(Gene_order, 2) ,
+                      logFC = c(abs(logFC_vector_X), abs(logFC_vector_Y)),
+                      # LEGOlogFC = abs(LEGO_logFC_vector),
+                      # BROCADElogFC = abs(BROCADE_logFC_vector),
+                      Direction = c(DIRECTION_idx_1, DIRECTION_idx_2),
+                      # LEGOdir =DIRECTION_idx_1,
+                      #BROCADEdir =DIRECTION_idx_2
+                      log10FDR = c(-1* log10(FDR_vector_X), -1* log10(FDR_vector_Y)),
+                      Dataset = c(rep(NAME_x_str, length(GeneList_HGNC)), rep(NAME_y_str, length(GeneList_HGNC)))
+  )
+
+
+
+
+  #### 1. "Y" plot - to appear on the right
+  ggdat_Y <- ggdat[ggdat$Dataset==NAME_y_str,]
+  ggdat_Y$Genes <- factor(ggdat_Y$Genes, levels = ggdat_Y$Genes)
+  gg_Y <- ggplot(data = ggdat_Y, aes(x=Genes)) +
+    geom_bar(aes(y = logFC, fill=Direction, alpha=log10FDR), stat = "identity") +
+    coord_flip() + scale_y_continuous(breaks=seq(0,ymax,1), labels=seq(0,ymax,1),  limits = c(0, ymax), expand = c(0,0)) +
+    labs(x = NULL)+ggtitle(NAME_y_str)+THEME+ theme(plot.margin= unit(c(1, 0, 0, 0), "lines"))+scale_fill_manual("Direction", values = col_dict)+scale_alpha(range = c(0.1, 1), guide='legend')+theme(panel.border = element_blank())
+
+  # get ggplot grob
+  gg_Y_grob <- ggplotGrob(gg_Y)
+
+  #### 4. Get the legend
+  leg = gg_Y_grob$grobs[[which(gg_Y_grob$layout$name == "guide-box")]]
+
+  #### 1. back to "Y" plot - to appear on the right
+  # remove legend
+  legPos = gg_Y_grob$layout$l[grepl("guide", gg_Y_grob$layout$name)]  # legend's position
+  gg_Y_grob = gg_Y_grob[, -c(legPos-1,legPos)]
+
+  #### 2. "female" plot - to appear on the left -
+  # reverse the 'Percent' axis using trans = "reverse"
+
+  ggdat_X <- ggdat[ggdat$Dataset==NAME_x_str,]
+  ggdat_X$Genes <- factor(ggdat_X$Genes, levels = ggdat_X$Genes)
+  gg_X <- ggplot(data =ggdat_X, aes(x=Genes)) +
+    geom_bar(aes(y = logFC, fill=Direction, alpha=log10FDR), stat = "identity") +
+    coord_flip() + scale_y_continuous(breaks=seq(0,ymax,1), labels=seq(0,ymax,1), trans = 'reverse', limits = c(ymax, 0), expand = c(0,0)) + THEME+
+    labs(x = NULL)+ggtitle(NAME_x_str)+ theme(plot.margin= unit(c(1, 0, 0, 1), "lines"))+scale_fill_manual("Direction", values = col_dict)+scale_alpha(range = c(0.1, 1), guide='legend')+theme(panel.border = element_blank())
+
+  # get ggplot grob
+  gg_X_grob <- ggplotGrob(gg_X)
+
+  #### 4. Get the legend
+  leg = gg_X_grob$grobs[[which(gg_X_grob$layout$name == "guide-box")]]
+
+  # remove legend
+  gg_X_grob = gg_X_grob[, -c(legPos-1,legPos)]
+
+  ## Swap the tick marks to the right side of the plot panel
+  # Get the row number of the left axis in the layout
+  rn <- which(gg_X_grob$layout$name == "axis-l")
+
+  # Extract the axis (tick marks and axis text)
+  axis.grob <- gg_X_grob$grobs[[rn]]
+  axisl <- axis.grob$children[[2]]  # Two children - get the second
+  # axisl  # Note: two grobs -  text and tick marks
+
+  # Get the tick marks - NOTE: tick marks are second
+  yaxis = axisl$grobs[[2]]
+  yaxis$x = yaxis$x - unit(1, "npc") + unit(2.75, "pt") # Reverse them
+
+  # Add them to the right side of the panel
+  # Add a column to the gtable
+  panelPos = gg_X_grob$layout[grepl("panel", gg_X_grob$layout$name), c('t','l')]
+  gg_X_grob <- gtable_add_cols(gg_X_grob, gg_X_grob$widths[3], panelPos$l)
+  # Add the grob
+  gg_X_grob <-  gtable_add_grob(gg_X_grob, yaxis, t = panelPos$t, l = panelPos$l+1)
+
+  # Remove original left axis
+  gg_X_grob = gg_X_grob[, -c(2,3)]
+
+
+  #### 3. country labels - create a plot using geom_text - to appear down the middle
+  fontsize = 3
+  gg_LABELS <- ggplot(data = ggdat_Y, aes(x=Genes)) +
+    geom_bar(stat = "identity", aes(y = 0)) +
+    geom_text(aes(y = 0,  label = Genes), size = fontsize) +
+    ggtitle("Genes") +
+    coord_flip() + theme_bw() + THEME+
+    theme(panel.border = element_rect(colour = NA))
+
+  # get ggplot grob
+  gg_LABELS <- ggplotGrob(gg_LABELS)
+
+  # Get the title
+  Title = gg_LABELS$grobs[[which(gg_LABELS$layout$name == "title")]]
+
+  # Get the plot panel
+  gg_LABELS = gg_LABELS$grobs[[which(gg_LABELS$layout$name == "panel")]]
+
+  #### Arrange the components
+  ## First, combine "LEFT" and "RIGHT" plots
+  gg_final = cbind(gg_X_grob, gg_Y_grob, size = "first")
+
+  ## Second, add the labels (gtC) down the middle
+  # add column to gtable
+  maxlab = Gene_order[which(str_length(Gene_order) == max(str_length(Gene_order)))]
+  gg_final = gtable_add_cols(gg_final, sum(unit(1, "grobwidth", textGrob(maxlab, gp = gpar(fontsize = fontsize*72.27/25.4))), unit(5, "mm")),
+                             pos = length(gg_X_grob$widths))
+
+  # add the grob
+  gg_final = gtable_add_grob(gg_final, gg_LABELS, t = panelPos$t, l = length(gg_X_grob$widths) + 1)
+
+  # add the title; ie the label 'country'
+  titlePos = gg_X_grob$layout$l[which(gg_X_grob$layout$name == "title")]
+  gg_final = gtable_add_grob(gg_final, Title, t = titlePos, l = length(gg_X_grob$widths) + 1)
+
+  ## Third, add the legend to the right
+  gg_final = gtable_add_cols(gg_final, sum(leg$width), -1)
+  gg_final = gtable_add_grob(gg_final, leg, t = panelPos$t, l = length(gg_final$widths))
+
+  if (return){
+    return(gg_final)
+  } else {
+    # draw the plot
+    grid.newpage()
+    grid.draw(gg_final)
+  }
+
+}
+
+
+
+
+

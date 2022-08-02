@@ -1,0 +1,261 @@
+#
+#https://r-pkgs.org/data.html
+
+## -----  COLOUR FUNCTIONS
+
+#' Colour hues
+#'
+#' Get n colour hues
+#'
+#' @param n
+#'
+#' @return A character vector of hex colours
+#' @export
+#'
+
+gg_colour_hue <- function(n, lum=40, chrom=120) {
+  return(hcl(h = seq(15, 360, length = n), l = lum, c = chrom)[1:n])
+}
+
+
+#' Blend colours
+#'
+#' @param colour1 A hex character string
+#' @param colour2 A hex character string
+#' @param n Integer specifying number of colours
+#'
+#' @return Character vector of hex strings
+#' @export
+#' @import grDevices
+
+blend_colours <- function(colour1, colour2, n){
+  fc <- grDevices::colorRampPalette(c(colour1, colour2))
+  pal <- fc(n)
+
+  return(pal)
+}
+
+
+
+## -----  SHAPES
+
+#' Get shapes
+#'
+#' @param vec A vector of names
+#'
+#' @return Named vector of pch symbols to use in plotting
+#' @export
+#'
+
+getShapes <- function(vec){
+
+  n = length(vec)
+
+  if (n <= 12){
+    shapes <- c(19,15,17,18,23,25,22,21,24,8,4,3)
+  } else {
+    shapes <- 1:25
+  }
+
+  shapes <- shapes[1:n]
+  names(shapes) <- vec
+  return(shapes)
+}
+
+
+## -----  COLOUR BAR FUNCTIONS
+
+#' Get colour bar values
+#'
+#' @param x Numeric vector of values for a colour bar
+#' @param n Number of output values to condense x into
+#'
+#' @return Numeric vector of length n containing new colour bar values
+#' @export
+#'
+#' @examples
+get_cbarVals <- function(x, n){
+  n_2 = (n-3)/2
+  return(sort(c(min(x),
+                as.vector(quantile(x, seq(0.001, 0.45, length.out=n_2))),
+                quantile(x, 0.5)[[1]],
+                as.vector(quantile(x, seq(0.55, 0.999, length.out=n_2))),
+                max(x))))
+}
+
+
+#' Plot custom colour bar
+#'
+#' @param min Numeric, minimum value
+#' @param max Numeric, maximum value
+#' @param n_ticks Numeric, number of ticks to plot in colour bar
+#' @param col.vector Character vector, colour bar will plot will contain same number of values as col.vector
+#' @param flip Boolean, if TRUE flips coordinates
+#'
+#' @return A ggplot object that looks like a colour bar
+#' @import ggplot2
+
+ColourBar <- function(min, max, n_ticks, col.vector, flip=TRUE){
+  require(ggplot2)
+  dat_tmp <- data.frame(datx=rep("A", length(col.vector)),daty=as.integer((seq(from=min, to=max, length.out=length(col.vector)))), col=col.vector)
+
+  if (flip){
+    ColBar <- ggplot2::ggplot(dat_tmp, aes(x=datx, y=daty, fill=col))+
+      geom_bar(position="fill", stat="identity")+ coord_flip()+
+      scale_fill_manual(values=col.vector) +
+      scale_y_continuous(expand = c(0, 0), breaks=seq(from=0, to=1, length.out=n_ticks), labels=seq(from=min, to=max, length.out=n_ticks)) +
+      scale_x_discrete(expand = c(0, 0)) +
+      theme(legend.position = "none",
+            axis.title.y = element_blank(), axis.title.x = element_blank(),
+            axis.text.y=element_blank(), axis.text.x=element_text(size=12, face="bold", margin = margin(t = 15, r = 0, b = 0, l = 0)),
+            axis.ticks.y=element_blank(), axis.ticks.x=element_line(size=1),
+            plot.margin = unit(c(1,1,1,1), "cm"),
+            panel.grid=element_blank(),
+            panel.border=element_rect(fill=NA,size=0.8))
+  } else {
+    ColBar <- ggplot(dat_tmp, aes(x=datx, y=daty, fill=col))+
+      geom_bar(position="fill", stat="identity")+
+      scale_fill_manual(values=col.vector) +
+      scale_y_continuous(expand = c(0, 0), breaks=seq(from=0, to=1, length.out=n_ticks), labels=seq(from=min, to=max, length.out=n_ticks)) +
+      scale_x_discrete(expand = c(0, 0)) +
+      theme(legend.position = "none",
+            axis.title.y = element_blank(), axis.title.x = element_blank(),
+            axis.text.x=element_blank(),
+            axis.text.y=element_text(size=12,vjust =1, face="bold", margin = margin(t = 0, r = 0, b = 0, l = 0)),
+            axis.ticks.x=element_blank(), axis.ticks.y=element_line(size=1),
+            plot.margin = unit(c(0.5,13.5,0.5,13.5), "cm"),
+            panel.grid=element_blank(),
+            panel.border=element_rect(fill=NA,size=0.8))
+  }
+  return(ColBar)
+}
+
+
+## ----- COLOUR PALETTE FUNCTIONS
+
+
+
+#' Get viridis colour
+#'
+#' @param get Character, if not yellow will return purple value of viridis cmap
+#'
+#' @return Character, hex colour
+#' @export
+#'
+
+GetViridisCol <- function(get="yellow"){
+  return(ifelse(get=="yellow","#FDE825","#440C53"))
+}
+
+#' Show colour pal
+#'
+#' @param colour_vec Character vector containing hex colours
+#' @param name_str Name of colour palette, if not NULL a title is added
+#' @param title_mar Integer value for margin between plot and title i.e. margin(0,0,title_mar,0)
+#'
+#' @return Barplot, displaying colours in `colour_vec`
+#' @export
+#'
+#' @examples
+#'
+#' ShowColPal(hcl.colors(100, palette = "Mako"))
+#'
+#' lapply(GetColPal_options(n), ShowColPal)
+#'
+#' plot_lst <- lapply(hcl.pals("sequential"),
+#' function(x){ShowColPal(hcl.colors(10, palette = x), name_str=x)})
+#' cowplot::plot_grid(plotlist = plot_lst[1:20], ncol = 2)
+#'
+
+ShowColPal <- function(colour_vec,name_str=NULL, title_mar=-20){
+  dat_x <- data.frame(element=rep("1",length(colour_vec)),
+                      val=rep(1,length(colour_vec)),
+                      colour=as.vector(colour_vec))
+  PropBar <- ggplot(dat_x, aes(x = element, y=val, fill=colour)) + geom_bar(position="dodge", stat="identity") +
+    geom_bar(stat = "identity",color="black",size=0.2)+scale_fill_manual(values=as.vector(colour_vec))+ coord_flip()+theme_bw()+
+    scale_y_continuous(expand = c(0, 0))+labs(fill = "")+
+    theme(legend.position = 'none',panel.border = element_rect(colour = NA),
+          panel.grid.minor = element_blank(),panel.grid.major = element_blank(),
+          axis.text = element_blank(), axis.line = element_blank(),
+          axis.ticks=element_blank(),axis.title =element_blank())
+  if (!(is.null(name_str))){
+    PropBar <- PropBar +labs(title=name_str)+theme(plot.title = element_text(margin=margin(0,0,title_mar,0)))
+  }
+  return(PropBar)
+}
+
+
+
+
+#' Get colour palette
+#'
+#' @param vec Character vector of names
+#'
+#' @return Named character vector containing a hex colour for each name in `vec`
+#' @export
+#'
+#' @examples
+GetColPal <- function(vec){
+  vec <- as.vector(vec)
+  pal <- GetColPal_options(length(vec))
+  if (is.list(pal)){
+    pal <- pal[[1]]
+  }
+  names(pal) <- vec
+  return(pal)
+}
+
+#' Get colour palette options
+#'
+#' @param n Integer, length of desired colour pal
+#'
+#' @return List of colour paletes for length `n`
+#' @export
+#' @importFrom  wesanderson wes_palette
+#' @importFrom  Manu get_pal
+#' @importFrom ggsci pal_npg
+GetColPal_options <- function(n){
+
+  wes_chev <- wesanderson::wes_palette("Chevalier1")[1:4]
+  wes_GB1 <- wesanderson::wes_palette("GrandBudapest1")[1:4]
+  wes_GB2 <- wesanderson::wes_palette("GrandBudapest2")[1:4]
+  wes_royal2 <- wesanderson::wes_palette("Royal2")[1:5]
+  wes_rush <- wesanderson::wes_palette("Rushmore1")[1:5]
+  wes_moonrise <- wesanderson::wes_palette("Moonrise3")[1:5]
+  wes_6 <- wesanderson::wes_palette(6,name="IsleofDogs1")
+
+
+  ColPals = list()
+  ColPals$`2` <- list(get_pal("Hoiho")[c(1,2)], c("#BC8E7D", "#485DAA"))
+  ColPals$`3` <- list(get_pal("Hoiho")[c(3, 2, 4)], c( "#7d9fc2", "#C582B2", "#51806a"))
+  ColPals$`4` <- list(c("#7d9fc2", "#C582B2", "#51806a", "#4d5f8e"),
+                      wes_chev,wes_GB1,wes_GB2)
+  ColPals$`5` <- list(c("#A7473A", "#4B5F6C", "#B09B37", "#955F47", "#A8B9CB"),
+                   c("#DD3C51", "#313657", "#1F6683", "#6C90B9", "#D1C7B5"),
+                   c("#719E56", "#71702F", "#947163", "#623711", "#425266"),
+                   wes_royal2, wes_rush,wes_moonrise,
+                   pal_npg()(5), c("#264653", "#2a9d8f", "#e9c46a", "#f4a261", "#e76f51"))
+  ColPals$`6` <- list(c("#5FA1F7", "#83A552", "#3D4928", "#9B1F1A", "#B19F8E", "#4E0B0C"),
+                   c("#3E4331", "#AD6B17", "#66743B", "#D0C471", "#CCB62F", "#BAC4C2"),
+                   c("#AA988A", "#B66A40", "#2F414B", "#2B4B3C", "#7A3520", "#7B8BA5"),
+                   c("#325756", "#7d9fc2", "#C582B2", "#51806a", "#4d5f8e", "#A092B7"),
+                   c("#CABEE9", "#7C7189", "#FAE093", "#D04E59", "#BC8E7D", "#2F3D70"),
+                   wes_6[1:6])
+  ColPals$`7` <- list(c("#6C803A", "#7B5C34", "#AB7C47", "#CCAE42", "#D73202",  "#272318", "#D3CDBF"),
+                   c("#9e5476", "#d18b79",  "#70a18f",
+                     "#e7ebbc",
+                     "#8bbde6", "#6074ab",
+                     "grey"))
+
+  if (as.character(n) %in% names(ColPals)){
+    options <- ColPals[[as.character(n)]]
+    return(options)
+  } else {
+    message("Returning colour hues")
+    return(gg_colour_hue(as.integer(n)))
+  }
+
+}
+
+
+

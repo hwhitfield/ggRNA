@@ -1,0 +1,254 @@
+
+
+#' Dictionary to annotation dataframe
+#'
+#' @param dict_lst Named list of dictionaries
+#' @param data_names Vector of row or column names
+#'
+#' @return Dataframe of annotations in the correct format for `simpleHeatmap`, where rownames are heatmap_dat rownames
+#' @export
+#'
+#' @examples
+#' col_annot <- dict2Annotdf(list(SigType=sig_group, Author=SigAuthor), colnames(heatmap_dat))
+#' row_annot <- dict2Annotdf(list(CellType=setNames(tmp_dge$samples$CellType,rownames(tmp_dge$samples)),
+#'                                Cluster=setNames(tmp_dge$samples$Cluster,rownames(tmp_dge$samples)),
+#'                                Stage= setNames(tmp_dge$samples$Stage, rownames(tmp_dge$samples))),
+#'                                   rownames(heatmap_dat))
+#' simpleHeatmap(heatmap_dat,row_annot,col_annot)
+#'
+dict2Annotdf <- function(dict_lst, data_names){
+
+
+  data_names <- as.vector(data_names)
+
+  if (is.null(names(dict_lst))){
+    message("WARNING: dict_lst should have names")
+    names(dict_lst) <- as.character(paste0("annot_",1:length(dict_lst)))
+  }
+
+  if (!(all(unlist(lapply(dict_lst, function(x){all(data_names %in% names(x))}))))){
+    message("WARNING: dict keys should match data_names")
+  }
+
+  annot_lst <- lapply(names(dict_lst),
+                  function(x_annot){as.vector(dict_lst[[x_annot]][data_names])})
+  names(annot_lst) <- names(dict_lst)
+  annot_df <- data.frame(annot_lst,row.names=data_names)
+  return(annot_df)
+}
+
+#' Get ordering
+#'
+#' @param annot_df Dataframe of annotations like `dict2Annotdf`
+#' @param orderBy Character, column of `annot_df` that should be ordered in heatmap
+#'
+#' @return Annotation dataframe, ordered according to `orderBy`
+#' @export
+
+
+GetOrdering <- function(annot_df, orderBy){
+
+  ## Ensure is factor
+  if (!(is.factor(annot_df[[orderBy]]))){
+    annot_df[[orderBy]] <- factor(as.vector(annot_df[[orderBy]]),
+                                levels=unique(as.vector(annot_df[[orderBy]])))}
+  ## Order
+  annot_df <- annot_df[order(annot_df[[orderBy]]),]
+  return(rownames(annot_df))
+}
+
+#' Make heatmap annotation
+#'
+#' Wrapper function to make heatmap annotation for ComplexHeatmap
+#'
+#' @param annot_df Annotation dataframe, rownames are heatmap rownames
+#' @param annot_cols Named character vector of hex colours for annotations in `annot_df`
+#' @param leg_lst List of legend params
+#' @param what Character describing whether `annot_df` contains row or column annotations
+#'
+#' @return
+#' @export
+#'
+#' @examples
+MakeAnnot <- function(annot_df,annot_cols, leg_lst, what="column"){
+
+  require(ComplexHeatmap)
+
+  leg_param_lst <- list()
+  for (i_annot in colnames(annot_df)){
+    leg_param_lst[[i_annot]] <- leg_lst
+  }
+
+  return(HeatmapAnnotation(df=annot_df,
+                           col = annot_cols[colnames(annot_df)],
+                           which=what,
+                           show_annotation_name =FALSE,
+                           annotation_legend_param=leg_param_lst))
+}
+
+#' Add palette
+#'
+#' @param annot_name Character, name of annotation
+#' @param row_annot
+#' @param col_annot
+#'
+#' @return Named character vector of hex colours
+#' @export
+#'
+
+AddPal <- function(annot_name, row_annot, col_annot){
+
+    if (annot_name %in% colnames(row_annot)){
+      pal_names <- unique(row_annot[[annot_name]])
+      n <- length(pal_names)
+    } else {
+      pal_names <- unique(col_annot[[annot_name]])
+      n <- length(pal_names)
+    }
+    i_pal <- GetColPal_options(n)
+    if (class(i_pal) == "list"){
+      i_pal <- i_pal[[sample(1:length(i_pal), 1)]]
+    }
+    names(i_pal) <- pal_names
+    return(i_pal)
+}
+
+#' Check columns
+#'
+#' @param col_lst List of columns
+#' @param row_annot Dataframe of row annotations
+#' @param col_annot Dataframe of column annotations
+#'
+#' @return
+#' @export
+
+CheckCols <- function(col_lst, row_annot, col_annot){
+
+  annot_names <- c(colnames(row_annot), colnames(col_annot))
+
+  if (all(annot_names %in% names(col_lst))){
+    if (all(!(as.vector(is.na(col_lst) | is.null(col_lst))))){
+      return(col_lst)
+    } else {
+      for (i_annot in names(col_lst)[as.vector(is.na(col_lst) | is.null(col_lst))]){
+        ## Add colours to list for these NA annots
+        col_lst[[i_annot]] <- AddPal(i_annot, row_annot, col_annot)
+      }}
+
+  } else {
+    for (i_annot in annot_names[!(annot_names %in% names(col_lst))]){
+        col_lst[[i_annot]] <- AddPal(i_annot, row_annot, col_annot)
+    }
+  }
+
+  return(col_lst)
+}
+
+#' Simple Heatmap
+#'
+#' Main function, serves as a wrapper for ComplexHeatmap with the intention of
+#' simplifying the coordination of row and column annotations
+#'
+#' @param heatmap_dat
+#' @param row_annot_df Dataframe of row annotations according to `dict2Annotdf`, rownames are `heatmap_dat` row names
+#' @param col_annot_df Dataframe of column annotations according to `dict2Annotdf`, rownames are `heatmap_dat` row names
+#' @param value_str Character string, name of the value being plotted
+#' @param annot_cols Named list of all the colour maps for annotations in `row_annot_df` and `col_annot_df`
+#' @param order_by A vector of two elements, either character strings or NA, describing if rows and/or columns should be ordering according to the input `heatmap_dat` i.e. c(row,col). If NA, clustering is performed. Assumes annotation is a factor as per `GetOrdering`
+#' @param leg_text_size Integer, size of legend text
+#' @param leg_side Character string, side to put heatmap legend, either "right", "left", "bottom" or "top"
+#' @param row_names Boolean, if TRUE displays row names
+#' @param col_names Boolean, if TRUE displays column names
+#' @param cmap Character vector of hex colours used to colour heatmap
+#'
+#' @return Function returns a HeatmapList-class object (ComplexHeatmap), a plot is created
+#' @export
+#'
+#' @examples
+#' ## -- Run dict2Annotdf(dict_lst, data_names) to get row/col annot_dfs. Must include row/column annotations
+#' col_annot <- dict2Annotdf(list(SigType=sig_group, Author=SigAuthor), colnames(heatmap_dat))
+#' row_annot <- dict2Annotdf(list(CellType=setNames(tmp_dge$samples$CellType,rownames(tmp_dge$samples)),
+#'                               Cluster=setNames(tmp_dge$samples$Cluster,rownames(tmp_dge$samples)),
+#'                               Stage= setNames(tmp_dge$samples$Stage, rownames(tmp_dge$samples))),
+#'                         rownames(heatmap_dat))
+#' simpleHeatmap(heatmap_dat,row_annot,col_annot)
+#'
+#' ## -- Define colours
+#' col_lst <- list(SigType=sig_cols,Author=Author_cols,
+#'                    CellType=GA_cols,Cluster=NCC_clust_cols,Stage=TS_cols)
+#' simpleHeatmap(heatmap_dat,row_annot,col_annot, annot_cols=col_lst)
+#'
+#' ## -- Different ordering
+#' simpleHeatmap(heatmap_dat,row_annot,col_annot,order_by=c(NA, "SigType"))
+#' simpleHeatmap(heatmap_dat,row_annot,col_annot,order_by=c("CellType", NA))
+#' simpleHeatmap(heatmap_dat,row_annot,col_annot,order_by=c("CellType", "SigType"))
+
+simpleHeatmap <- function(heatmap_dat,
+                          row_annot_df,
+                          col_annot_df,
+                          value_str="value",
+                          annot_cols=NULL,
+                          order_by=c(NA,NA),
+                          leg_text_size=14,leg_side="left",
+                          row_names=FALSE, col_names=FALSE, cmap=mako(100)){
+
+  ## To do:
+  #     - Make one of annot dfs able to be NA
+  #     - Only allow row/col split if clustering is FALSE
+
+      require(ComplexHeatmap)
+
+      if (is.null(annot_cols)){
+        annot_cols <- list()
+        annot_cols[c(colnames(row_annot_df), colnames(col_annot_df))] <- NA
+      } else {
+        annot_cols <- annot_cols[names(annot_cols) %in% c(colnames(row_annot_df), colnames(col_annot_df))]
+      }
+
+      row_annot_df <- as.data.frame(row_annot_df)
+      col_annot_df <- as.data.frame(col_annot_df)
+
+      row_order_by = order_by[1]
+      col_order_by = order_by[2]
+      row_clust = ifelse(is.na(row_order_by),TRUE,FALSE)
+      col_clust=ifelse(is.na(col_order_by),TRUE,FALSE)
+
+      ### --- Check/get colours
+      annot_cols <- CheckCols(annot_cols, row_annot_df, col_annot_df)
+
+      ### --- Get row/col ordering
+      row_ordering = if (is.na(row_order_by)){rownames(heatmap_dat)} else {GetOrdering(row_annot_df, row_order_by)}
+      col_ordering = if (is.na(col_order_by)){colnames(heatmap_dat)} else {GetOrdering(col_annot_df, col_order_by)}
+      row_annot_df <- row_annot_df[row_ordering,]
+      col_annot_df <- col_annot_df[col_ordering,]
+
+      ### --- Get heatmap annotations
+      title_size=leg_text_size+2
+      legend_lst <- list(title_gp =gpar(fontsize = title_size),labels_gp =gpar(fontsize = leg_text_size))
+      RA <- MakeAnnot(row_annot_df,annot_cols, legend_lst, "row")
+      TA <- MakeAnnot(col_annot_df,annot_cols, legend_lst)
+
+      ### --- Plot heatmap
+      ht_obj <- Heatmap(heatmap_dat[row_ordering,col_ordering],
+                  row_names_side = "right", col=cmap,
+                  column_dend_height = unit(15, "mm"),
+                  cluster_rows=row_clust,cluster_columns =col_clust,
+                  show_row_names =row_names, # row_split=rowsplit_vec,
+                  show_column_names =col_names,
+                  show_row_dend =ifelse(nrow(heatmap_dat)>20, FALSE, TRUE),
+                  show_column_dend =ifelse(ncol(heatmap_dat)>20, FALSE, TRUE),
+                  top_annotation=TA,
+                  right_annotation=RA,
+                  heatmap_legend_param = list(title=value_str),
+                  column_title=NULL,row_title=NULL,
+                  column_names_rot =45,column_names_gp = gpar(fontsize = title_size))
+                       # column_dend_reorder=ifelse(grepl("E_",colnames(heatmap_dat)), 1, 2)
+
+      ComplexHeatmap::draw(ht_obj,merge_legends=T,heatmap_legend_side =leg_side,
+                           ht_gap  = unit(2, "mm"),legend_gap = unit(5, "mm"), auto_adjust = TRUE,
+                           adjust_annotation_extension = TRUE, padding=unit(c(1, 1, 1, 2), "cm"))
+
+}
+
+
+

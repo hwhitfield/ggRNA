@@ -1,0 +1,725 @@
+######################################################################################################
+##
+##  MPE PAPER IMMUNE RE-ANALYSIS FOR REVIEWER COMMENTS 
+##
+##  Subtype analysis of B/T cells (R1-4)
+##    - Subcluster B/T cells w/ batch correction for non-enriched patients
+##    - T cell classifcation/projection like this https://www.nature.com/articles/s41467-021-23324-4
+##    - Or just use SingleR classification (trained on PBMC? Or lung data maybe?)
+##  Explore unassigned immune cluster more (R2-5)
+##    - Look at genes/subclustering and speculate granulocytes
+##    - Show proportional bar plot in supps to show discordance between cells & references
+##    - In supps show that is not library size etc.
+##  Compare cluster gene expression with public tissue (R3-4)
+##    - This would have been achieved by addressing R1-4
+##
+########-----------------
+
+library(scfunc)
+library(ggRNA)
+
+
+requiredPackages <- c("cowplot", "ggplot2", "SingleCellExperiment", "scater","scran", "gridExtra")
+
+for (pkg in requiredPackages){
+  suppressWarnings(suppressMessages(library(pkg, character.only = T)))
+}
+
+SAVEDATA_DIR <- "/stornext/Home/data/allstaff/w/whitfield.h/PhD_Project_MPE/Data/"
+OUTPUT_FIGURE_DIR <- "/stornext/Home/data/allstaff/w/whitfield.h/PhD_Project_MPE/Output/ReviewerComments/immune/"
+
+#load("/stornext/Home/data/allstaff/w/whitfield.h/data_load/genesets/panglao_lst.Rdata")
+
+
+### COLOURS ------------
+
+Colour_values_PatientID <- c("#077187", "#6AAAB7", "#8E2043", "#BC7A8F", 
+                             "#FEA090","#FECFC7", "#3E5496", "#0A9086", 
+                             "#E0607E", "#E1D164")
+names(Colour_values_PatientID) <- c("BCB66","BCB66_E", "BCB20","BCB20_E", "BCB21", 
+                                    "BCB21_E", "BCB112",  "BCB139",  "BCB90",  "BCB114")
+
+Immune_Colour_values <- c("#b2dba0", "#637c8f", "#70a18f",
+                          "#e7ebbc", "#8bbde6", "#6074ab", 
+                          "grey")
+
+names(Immune_Colour_values) <- c("Macrophage", "DC", "Myeloid",  
+                                 "B_cells","NK_cells", "T_cells",
+                                 "Unassigned")
+
+
+Immune_col_2dat <- c("#b2dba0","#b2dba0", "#637c8f","#637c8f", "#70a18f",
+                          "#e7ebbc","#e7ebbc", "#8bbde6", "#6074ab", "#6074ab", 
+                          "grey", "purple")
+
+names(Immune_col_2dat) <- c("Macrophage", "TAMs", "DC", "DCs", "Myeloid",  
+                                 "B_cells","B cells","NK_cells", "T_cells", "T cells",
+                                 "Unassigned", "Plasma cells")
+
+binary_cols <- c("#513884", "lightgrey")
+names(binary_cols) <- c(TRUE, FALSE)
+
+##### ----- LOAD THEMES ------------------------------------
+
+#load(file=paste(SAVEDATA_DIR,"Mega_Immune_BCB_sce.Rdata", sep="")) # MegaBCB_Immune
+#MegaBCB_Immune$RefinedImmune_label <- replace(MegaBCB_Immune$RefinedImmune_label, MegaBCB_Immune$RefinedImmune_label=="Unknown", "Unassigned")
+rl=1
+TSNE_THEME <- theme_bw()+theme(legend.text = element_text(size = rel(rl)*1.1),
+                      legend.title = element_text(size = rel(rl)*1.3, face = 'bold'),
+                      legend.position = 'bottom',panel.border = element_rect(colour = NA), legend.text.align=0.5,
+                      panel.grid.minor = element_blank(),
+                      panel.grid.major = element_blank(),
+                      axis.text.y = element_blank(), axis.text.x = element_blank(), 
+                      axis.line.y = element_blank(),axis.line.x = element_blank(),
+                      axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+                      axis.title.y =element_blank(),  axis.title.x=element_blank(),legend.box.margin=margin(0,0,0,0),
+                      legend.spacing = unit(0, 'cm'))
+
+MARKER_THEME <- theme(axis.ticks = element_blank(), panel.border=element_blank(),
+                      axis.title = element_blank(), axis.text=element_blank(), 
+                            axis.line = element_blank()) #legend.key.height=unit(0.1, units="npc")
+
+PlainBar_theme <- theme(legend.text = element_text(size = rel(rl)*1.3),
+                        legend.title = element_text(size = rel(rl)*1.6, face = 'bold'),
+                        legend.position = 'bottom',
+                        panel.border = element_rect(colour = NA),
+                        panel.grid.minor = element_blank(),
+                        panel.grid.major = element_blank(),
+                        axis.text.y = element_blank(), axis.text.x = element_blank(), 
+                        axis.line.y = element_blank(),axis.line.x = element_blank(),
+                        axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+                        axis.title.y =element_blank(),  axis.title.x=element_blank(),
+                        legend.spacing = unit(0.1, 'cm'),
+                        legend.margin=margin(0,0,0,0),legend.box.spacing= unit(0, 'cm'),
+                        legend.box.margin=margin(-5,-5,-5,-5))
+
+
+
+
+##### ----- FIG 2 : AVERAGE TPM HEATMAP ------------------------------------
+
+load(file=paste(SAVEDATA_DIR,"Mega_Immune_BCB_sce.Rdata", sep="")) # MegaBCB_Immune
+
+
+common_name_dict <- c("CD56","CD16", #NK -- neg selection for DC
+                      "CD3D", "CD3G","CD8A","CD8B","CD4","CD25", # T cell
+                      "CD14", # monocyte
+                      "CD68", "FCGR1A", "CCR5", #mac
+                      "CD19","CD20","CD79A","JCHAIN", # B/PLASMA
+                      "CD1C","CD11b","CD11c","HLA-DRA","HLA-DRB5","HLA-DRB1",
+                      "CD15","CD125","CCR3","CD123",# granulocute/eosinophil)
+                      "CX3CR1") #TAM
+
+gene_lst <- c("NCAM1","FCGR3A", #NK -- neg selection for DC
+  "CD3D", "CD3G","CD8A","CD8B","CD4","IL2RA", # T cell
+  "CD14", # monocyte
+  "CD68", "CD64", "CCR5", #mac
+  "CD19","MS4A1","CD79A","JCHAIN", # B/PLASMA
+  "CD1C","ITGAM","ITGAX","HLA-DRA","HLA-DRB5","HLA-DRB1",
+  "FUT4","IL5RA","CCR3","IL3RA" # granulocute/eosinophil
+  )
+names(common_name_dict) <-gene_lst
+
+#  CD1C & CD4 co-occuring?
+gene_lst_2 <- c("CD1C","ITGAX", "HLA-DRA","HLA-DRB5", "HLA-DRB1", # DC
+              "CD68", "CD64",  #mac
+              "CCR5",
+              "ITGAM",
+              "FUT4", "CD14", # monocyte
+              "NCAM1","FCGR3A", #NK -- neg selection for DC
+              "CD3D", "CD3G","CD8A","CD8B", # T cell
+              "IL5RA","CCR3",
+              "IL2RA",
+              "IL3RA", "JCHAIN",
+              "CD19","MS4A1","CD79A"# B/PLASMA
+)
+
+MegaBCB_Immune$RefinedImmune_label <- MegaBCB_Immune$RefinedImmune_label
+
+celltypes <- c("DC",
+               "Myeloid",
+               "Macrophage", 
+               "NK_cells","T_cells",
+               "Unassigned","B_cells")
+ggheatmap <- scHeatmap(MegaBCB_Immune, "RefinedImmune_label", gene_lst_2,
+          exprs_val="TPM",
+          log=TRUE,
+          save_path=NULL,
+          scale_str = "genes",cluster_genes =TRUE, cluster_samples=FALSE,
+          groups_to_plot=celltypes, min_cells=100)
+row_names <- unique(as.vector(ggheatmap$data$variable))
+alt_names <- as.vector(common_name_dict[row_names])
+new_names <- paste0(row_names, "(",alt_names,")")
+rows <- unlist(lapply(1:length(row_names),function(i){ifelse(row_names[[i]]==alt_names[[i]],row_names[[i]],new_names[[i]])}))
+
+png(paste0(OUTPUT_FIGURE_DIR,"FIG2_markerHeatmap.png"),  width=2000, height=2000,  res=200)
+ggheatmap + scale_y_discrete(labels= rows,expand=c(0,0))
+dev.off()
+
+pdf(paste0(OUTPUT_FIGURE_DIR,"FIG2_markerHeatmap.pdf"),  width=8, height=6)
+ggheatmap+ scale_y_discrete(labels= rows,expand=c(0,0))+
+  scale_fill_gradientn(colours= hcl.colors(100, palette = "Mako"))+
+  guides(fill=guide_colorbar(title="",title.position ="bottom",direction="vertical",
+                             barwidth =unit(0.025, units="npc"),
+                             barheight = unit(0.5, units="npc")))+
+  theme(axis.text.x=element_blank())
+dev.off()
+
+
+#png(paste0(OUTPUT_FIGURE_DIR, "Fig2b_MegatSNE.png", ""),width = 2000, height = 2000, res=200)
+
+# Plasmacytoid dendritic cell 
+# Unknown cluster would need to be isolated and further studied in additional MPE samples to confidentaly determine the identity of this subset
+##
+
+### --- RE-DO MEGA TSNE ------------
+Mega_BCB_tSNE <- plotReducedDim(MegaBCB_Immune, dimred="TSNE", colour_by="RefinedImmune_label", 
+                                point_alpha=0.82, point_size=1.5)+theme_bw()+
+  scale_fill_manual(values=Immune_Colour_values)+
+  scale_colour_manual(values=Immune_Colour_values)+
+  theme(legend.text = element_text(size = rel(rl)*1.1),
+        legend.title = element_text(size = rel(rl)*1.3, face = 'bold'),
+        legend.position = 'bottom',panel.border = element_rect(colour = NA), legend.text.align=0.5,
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank(),
+        axis.text.y = element_blank(), axis.text.x = element_blank(), 
+        axis.line.y = element_blank(),axis.line.x = element_blank(),
+        axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+        axis.title.y =element_blank(),  axis.title.x=element_blank(),legend.box.margin=margin(0,0,0,0),
+        legend.spacing = unit(0, 'cm'))+ labs(fill = "Cell Type")
+#Mega_BCB_tSNE$layers[[1]]$aes_params$colour = NULL
+#Mega_BCB_tSNE$layers[[1]]$mapping$`colour` <- Mega_BCB_tSNE$layers[[1]]$mapping$`fill`
+#Mega_BCB_tSNE <- Mega_BCB_tSNE + guides(fill=guide_legend(nrow=3,byrow=TRUE, override.aes = list(size=4)), color = FALSE)
+
+Mega_BCB_tSNE <- ggDIMRED(MegaBCB_Immune, dimred="TSNE", 
+                  colour_by="RefinedImmune_label",col_pal = Immune_Colour_values,
+                    point_alpha=1, point_size=1.1)+theme_blank()
+
+pdf(paste0(OUTPUT_FIGURE_DIR,"Fig2b_MegatSNE_ByRefinedImmune_label.pdf"),  width=7, height=6)
+Mega_BCB_tSNE
+dev.off()
+
+png(paste0(OUTPUT_FIGURE_DIR,"Fig2b_MegatSNE_ByRefinedImmune_label.png"),  width=2000, height=1800, res=250)
+Mega_BCB_tSNE
+dev.off()
+
+
+
+### --- RE-DO PROP BARS ------------
+
+
+### Get proportions
+CellType_Props <- GetProps_perPatient(MegaBCB_Immune, label="RefinedImmune_label", "PatientID")
+CellType_Props$CellType <- rownames(CellType_Props)
+CellType_Props <- reshape2::melt(CellType_Props, id.vars="CellType", value.name="Proportion", variable.name="PatientID")
+CellType_Props <- CellType_Props[order(-CellType_Props$Proportion),]
+
+## Add cell number info
+SampleCols <- c("BCB90", "BCB114","BCB21", "BCB20", "BCB139",  "BCB112", "BCB66")
+SampleNumbs_str_dict <- paste0(SampleCols, " \n (n = ",
+                               unlist(lapply(SampleCols, function(x) {ncol(MegaBCB_Immune[,MegaBCB_Immune$PatientID == x])})), ")", "")
+names(SampleNumbs_str_dict) <- SampleCols
+SampleNumbs_dict <- unlist(lapply(SampleCols, function(x)  {ncol(MegaBCB_Immune[,MegaBCB_Immune$PatientID == x])}))
+names(SampleNumbs_dict) <- SampleCols
+
+CellType_Props$CellNumb_str <- as.vector(SampleNumbs_str_dict[as.vector(CellType_Props$PatientID)])
+CellType_Props$CellNumb <- as.vector(SampleNumbs_dict[as.vector(CellType_Props$PatientID)])
+CellType_Props$CellType <- factor(CellType_Props$CellType, levels=rev(CellType_Ordering))
+CellType_Props$PatientID <- factor(CellType_Props$PatientID, levels=SampleCols)
+
+### Plot  
+rl=1.1
+PropBar_pp <- ggplot(CellType_Props, aes(x = PatientID, y = Proportion, fill=CellType)) +  
+  geom_bar(stat = "identity", position = "stack", width=0.95)+xlab("\nPatientID") +ylab("\nLabel Proportion") +
+  scale_fill_manual(values=Immune_Colour_values, breaks=CellType_Props$CellType)+ coord_flip()+theme_bw()+scale_y_continuous(expand = c(0, 0), limits = c(0,100))+
+  PlainBar_theme+ labs(fill = "Cell Type")+
+  theme(axis.title.y =element_blank(), axis.text.y  = element_text(angle=90, hjust=0.5, size = rel(rl)), legend.position = "top",
+        legend.text = element_text(size = rel(rl)*1.3), legend.text.align = 0.5, legend.title.align = 0.5, legend.spacing.x = unit(0.2, 'cm'),
+        legend.box.spacing= unit(0.1, 'cm'))
+
+## Get cell numbs 
+CellType_Numb <- CellType_Props[!(duplicated(CellType_Props$PatientID)),colnames(CellType_Props) %in% c("PatientID", "CellNumb")]
+CellType_Numb$CellNumb <- as.numeric(CellType_Numb$CellNumb)
+
+cellNumb_bar <- ggplot(data=CellType_Props, aes(x=PatientID, y=CellNumb)) + 
+  geom_bar(stat="identity", position="dodge", width=0.93,  fill="dimgrey")+coord_flip()+theme_bw()+PlainBar_theme
+
+
+pdf(paste0(OUTPUT_FIGURE_DIR, "Fig2c_PropBar.pdf", ""), width=8, height=6)
+grid.arrange(grobs=list(PropBar_pp+theme(legend.position = "none",plot.margin=unit(c(0,0,0.5,0), "cm"),
+                                         axis.title.y =element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank()), 
+                        cellNumb_bar+
+                          theme(axis.title.y =element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank(), 
+                                axis.ticks.x=element_line(), axis.line.x=element_line(), 
+                                axis.text.x=element_text(size = rel(rl)*1.6, hjust=0.8),
+                                plot.margin=unit(c(0,0,0,0), "cm"))+
+                          scale_y_continuous(labels=c("","", "", ""), limits=c(0, 6000),breaks = c(0, 2000, 4000, 6000))),
+             ncol=2, nrow=1, 
+             widths = c(5,1))
+dev.off()
+
+pdf(paste0(OUTPUT_FIGURE_DIR, "Fig2c_PropBar_labs.pdf", ""), width=8, height=6)
+grid.arrange(grobs=list(PropBar_pp+theme(legend.position = "none",plot.margin=unit(c(0,0,0.5,0), "cm"),
+                                         axis.title.y =element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank()), 
+                        cellNumb_bar+
+                          theme(axis.title.y =element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank(), 
+                                axis.ticks.x=element_line(), axis.line.x=element_line(), 
+                                axis.text.x=element_text(size = rel(rl)*1.6, hjust=0.8),
+                                plot.margin=unit(c(0,0,0,0), "cm"))+
+                          scale_y_continuous(labels=c("0","2k", "4k", "6k"), limits=c(0, 6000),breaks = c(0, 2000, 4000, 6000))),
+             ncol=2, nrow=1, 
+             widths = c(5,1))
+dev.off()
+
+png(paste0(OUTPUT_FIGURE_DIR, "Fig2c_PropBar_names.png", ""), width=2500, height=2200, res=300)
+grid.arrange(grobs=list(PropBar_pp+theme(legend.position = "none",plot.margin=unit(c(0,0,0.5,0), "cm"),
+                                         axis.title.y =element_blank(),axis.ticks.y=element_blank()), 
+                        cellNumb_bar+
+                          theme(axis.title.y =element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank(), 
+                                axis.ticks.x=element_line(), axis.line.x=element_line(), 
+                                axis.text.x=element_text(size = rel(rl)*1.6, hjust=0.8),
+                                plot.margin=unit(c(0,0,0,0), "cm"))+
+                          scale_y_continuous(labels=c("","", "", ""), limits=c(0, 6000),breaks = c(0, 2000, 4000, 6000))),
+             ncol=2, nrow=1, 
+             widths = c(5,1))
+dev.off()
+
+
+
+##### ----- FIG 2 : T CELL & NK SUBTYPE MARKERS ------------------------------------
+
+#load(file=paste0(SAVEDATA_DIR,"T_sce.Rdata")) #T_reNorm_sce
+#T_reNorm_sce$CD4pos <- as.vector(counts(T_reNorm_sce[rownames(T_reNorm_sce) == "CD4",])>0)
+#T_reNorm_sce$CD4pos <- ifelse(T_reNorm_sce$CD4pos, "pos", "neg")
+#T_reNorm_sce$CD8pos <- as.vector(colSums(counts(T_reNorm_sce[rownames(T_reNorm_sce) %in% c("CD8A", "CD8B"),])>0))
+#T_reNorm_sce$CD8pos <- replace(T_reNorm_sce$CD8pos, T_reNorm_sce$CD8pos %in% c(1,2), "pos")
+#T_reNorm_sce$CD8pos <- replace(T_reNorm_sce$CD8pos, T_reNorm_sce$CD8pos == 0, "neg")
+#T_merged_sce <- SeuratIntegrate(T_reNorm_sce, "SeqRun")
+#T_merged_sce <- altExp(T_reNorm_sce, "merged")
+#T_merged_sce$CD4pos <- as.vector(setNames(T_reNorm_sce$CD4pos, T_reNorm_sce$CellID)[T_merged_sce$CellID])
+#T_merged_sce$CD8pos <- as.vector(setNames(T_reNorm_sce$CD8pos, T_reNorm_sce$CellID)[T_merged_sce$CellID])
+#T_merged_sce$ProjecTILs_pred <- as.vector(setNames(T_reNorm_sce$ProjecTILs_pred, T_reNorm_sce$CellID)[T_merged_sce$CellID])
+#altExp(T_reNorm_sce, "merged") <- T_merged_sce
+#save(T_reNorm_sce,file=paste0(SAVEDATA_DIR,"T_sce.Rdata"))
+
+### --- LOAD T CELL DATA
+load(file=paste0(SAVEDATA_DIR,"NKT_sce.Rdata"))
+
+
+#### TO DO : ADD NEGATIVE SELECTION CD3 FOR NK CELLS, UPDATE TABLE2 & RESULTS -- CD3D CD3G
+## https://www.nature.com/articles/s41467-019-11947-7#Fig5
+## Change on MPEPaperFigures_Fig2
+
+library(viridis)
+alph=0.5
+bar_h=0.075
+bar_w=0.02
+Tcell_tsne <- ggDIMRED(NKT_sce, dimred="TSNE",colour_by="RefinedImmune_label", 
+                       col_pal=Immune_Colour_values[names(Immune_Colour_values) %in% NKT_sce$RefinedImmune_label],
+                     ordering=NULL,point_size=1.1,point_alpha=0.7)+MARKER_THEME+
+                  scale_color_manual(labels = c("NK","T"), values = c("#8bbde6","#6074ab")) +
+                    theme(legend.position = "right", legend.title = element_blank(),
+                          legend.box.margin = margin(0,0,0,-7))+
+                  guides(colour=guide_legend(ncol=1,override.aes = list(size=4)))
+CD8A <- ggDIMRED(NKT_sce, dimred="TSNE",colour_by="CD8A",point_size=1,point_alpha=alph,npc_units=0.1,exprs_quant=1)+
+        MARKER_THEME+scale_color_viridis(name="CD8A",limits=c(0,3.5), na.value=GetViridisCol())+
+           theme(legend.title=element_blank(), legend.key.height=unit(bar_h, units="npc"),
+                           legend.key.width=unit(bar_w, units="npc"))
+        
+CD8B <- ggDIMRED(NKT_sce, dimred="TSNE",colour_by="CD8B",point_size=1,point_alpha=alph,npc_units=0.1,exprs_quant=1)+
+  MARKER_THEME+scale_color_viridis(name="CD8A",limits=c(0,3.5), na.value=GetViridisCol())+
+  theme(legend.title=element_blank(), legend.key.height=unit(bar_h, units="npc"),
+        legend.key.width=unit(bar_w, units="npc"))
+CD4 <- ggDIMRED(NKT_sce, dimred="TSNE",colour_by="CD4",point_size=1,point_alpha=alph,npc_units=0.1,exprs_quant=1)+
+  MARKER_THEME+scale_color_viridis(name="CD8A",limits=c(0,3.5), na.value=GetViridisCol())+
+  theme(legend.title=element_blank(), legend.key.height=unit(bar_h, units="npc"),
+        legend.key.width=unit(bar_w, units="npc"))
+#cowplot::plot_grid(Tcell_tsne,CD4,CD8A,CD8B, ncol=2)
+
+pdf(paste0(OUTPUT_FIGURE_DIR,"FIG2_NKT_CD84.pdf"),  width=7, height=7)
+cowplot::plot_grid(Tcell_tsne+theme(legend.position = "none",plot.margin = margin(0,20,0,0)),
+                   CD4,
+                   CD8A,
+                   CD8B, 
+                   ncol=2,
+                   labels=c("","CD4","CD8A","CD8B"),
+                   label_size=16, label_fontface ="plain", #label_fontfamily ="Calibri", 
+                   label_x=0.6, label_y=0.95)
+dev.off()
+
+png(paste0(OUTPUT_FIGURE_DIR,"FIG2_NKT_CD84.png"),  width=2000, height=2000,res=250)
+cowplot::plot_grid(Tcell_tsne+theme(legend.position = "none",plot.margin = margin(0,20,0,0)),
+                   CD4,
+                   CD8A,
+                   CD8B, 
+                   ncol=2,
+                   labels=c("","","",""),
+                   label_size=16, label_fontface ="plain", #label_fontfamily ="Calibri", 
+                   label_x=0.6, label_y=0.95)
+dev.off()
+
+
+
+
+
+##### ----- FIG 2 : B CELL vs PLASMA SUBTYPE MARKERS ------------------------------------
+## https://www.abcam.com/primary-antibodies/b-cells-basic-immunophenotyping
+## they are plasmas, they lack many Plasmacytoid dendritic cells markers
+## although pal et al. has CD19+ B cells, ours appear to all be neg
+## https://www.haematologica.org/article/view/8825
+
+load(file=paste0(SAVEDATA_DIR,"BPlas_sce.Rdata"))
+
+### --- FIX UP ANNOTATIONS -----------
+GetClust <- function(sce_obj,clust_str,lab_str,enriched_for_str,enrich_thresh=0.1){
+  ## Import CellTypeTable_perClust
+  Clust_dat <- CellTypeTable_perClust(sce_obj, clust_str, lab_str)
+  Clust_labels <- colnames(Clust_dat)[as.vector(Clust_dat[rownames(Clust_dat) == enriched_for_str,] > enrich_thresh)]
+  
+  clust_vec <- ifelse(sce_obj[[clust_str]] %in% Clust_labels, enriched_for_str, "NA")
+  return(clust_vec)
+}
+
+table(GetClust(BPlas_sce, "cluster_k20_ALL", "RefinedImmune_label","Unassigned",enrich_thresh=0.1))
+BPlas_sce$ClustLabel <- GetClust(BPlas_sce, "cluster_k20_ALL", "RefinedImmune_label","Unassigned",enrich_thresh=0.1)
+BPlas_sce$ClustLabel <- ifelse(BPlas_sce$ClustLabel =="NA","B_cells","Unassigned")
+
+### --- PLOT MARKER TSNES -----------
+
+
+# SLAMF7,CD36,  CD68, GZMB
+library(viridis)
+alph=0.65
+siz=1.8
+
+markers_to_plot <- c("JCHAIN", "IL7R","CD79A","IL3RA","GZMB","MS4A1",
+                     "PTPRC","SDC1","CD74","PAX5","CD52","IGHM")
+plot_lst <- lapply(markers_to_plot, function(x){
+  ggDIMRED(BPlas_sce, dimred="TSNE",colour_by=x,point_size=siz,point_alpha=alph,npc_units=0.05,exprs_quant=1)+
+    MARKER_THEME+scale_color_viridis(name=x,limits=c(0,3.5), na.value=GetViridisCol())
+})
+names(plot_lst) <- markers_to_plot
+
+Bcell_tsne <- ggDIMRED(BPlas_sce, dimred="TSNE",colour_by="ClustLabel", 
+                       col_pal=Immune_Colour_values[names(Immune_Colour_values) %in% BPlas_sce$ClustLabel],
+                       ordering=NULL,point_size=siz,point_alpha=0.7)+MARKER_THEME+
+  scale_color_manual(labels = c("B","NA"), values = c("#E9F3A3","grey")) + # E9F3A3 FAFAAE
+  theme(legend.position = "right", legend.title = element_blank(),
+        legend.box.margin = margin(0,0,0,-7))+
+  guides(colour=guide_legend(ncol=1,override.aes = list(size=4)))
+
+bar_h=0.075
+bar_w=0.02
+pdf(paste0(OUTPUT_FIGURE_DIR,"FIG2_BcellPlasmaMarkers.pdf"),  width=7, height=7)
+cowplot::plot_grid(Bcell_tsne+theme(legend.position="none",plot.margin = margin(0,20,0,0)),
+                   plot_lst$CD52+theme(legend.title=element_blank(), legend.key.height=unit(bar_h, units="npc"),
+                                       legend.key.width=unit(bar_w, units="npc")), #IGHM
+                   plot_lst$JCHAIN+ theme(legend.title=element_blank(), legend.key.height=unit(bar_h, units="npc"),
+                                          legend.key.width=unit(bar_w, units="npc")),
+                   plot_lst$IGHM + theme(legend.title=element_blank(), legend.key.height=unit(bar_h, units="npc"),
+                                         legend.key.width=unit(bar_w, units="npc")), 
+                   ncol=2,
+                   labels=c("","CD52","JCHAIN","IGHM"),
+                   label_size=16, label_fontface ="plain",#label_fontfamily ="Calibri", 
+                   label_x=0.6, label_y=0.95) #IL3RA/CD127
+dev.off()
+
+
+png(paste0(OUTPUT_FIGURE_DIR,"FIG2_BcellPlasmaMarkers.png"),  width=2000, height=2000, res=250)
+cowplot::plot_grid(Bcell_tsne+theme(legend.position="none",plot.margin = margin(0,20,0,0)),
+                   plot_lst$CD52+theme(legend.title=element_blank(), legend.key.height=unit(bar_h, units="npc"),
+                                       legend.key.width=unit(bar_w, units="npc")), #IGHM
+                   plot_lst$JCHAIN+ theme(legend.title=element_blank(), legend.key.height=unit(bar_h, units="npc"),
+                                          legend.key.width=unit(bar_w, units="npc")),
+                   plot_lst$IGHM + theme(legend.title=element_blank(), legend.key.height=unit(bar_h, units="npc"),
+                                         legend.key.width=unit(bar_w, units="npc")), 
+                   ncol=2,
+                   labels=c("","","",""),
+                   label_size=16, label_fontface ="plain",#label_fontfamily ="Calibri", 
+                   label_x=0.6, label_y=0.95) #IL3RA/CD127
+dev.off()
+
+
+
+
+### --- GET DE GENES -----------
+load("/stornext/Home/data/allstaff/w/whitfield.h/data_load/genesets/panglao_lst.Rdata")
+deB <- GetDEgenes(BPlas_sce, BPlas_sce$ClustLabel,
+                  "B_cells", "Unassigned",
+                  de_type="wilcox", dir_str="up",
+                  p_thres=0.05, fdr_thresh=0.05)
+intersect(panglao_lst$`Immune system`$`Plasma cells`, deB$Unassigned)
+intersect(panglao_lst$`Immune system`$`B cells`, deB$B_cells)
+intersect(panglao_lst$`Immune system`$`B cells memory`, deB$B_cells)
+intersect(panglao_lst$`Immune system`$`B cells naive`, deB$B_cells)
+PLASMA_plot_lst <- lapply(intersect(panglao_lst$`Immune system`$`Plasma cells`, deB$Unassigned), 
+                          function(x){
+                            ggDIMRED(BPlas_sce, dimred="TSNE",colour_by=x,
+                                     ordering=NULL,point_size=1.8,point_alpha=0.7,npc_units=0.01)})
+B_plot_lst <- lapply(intersect(panglao_lst$`Immune system`$`B cells`, deB$B_cells), 
+                     function(x){
+                       ggDIMRED(BPlas_sce, dimred="TSNE",colour_by=x,
+                                ordering=NULL,point_size=1.8,point_alpha=0.7,npc_units=0.01)})
+
+cowplot::plot_grid(plotlist=PLASMA_plot_lst[1:9],ncol=3)
+
+desubtypeB <- GetDEgenes(BPlas_sce, BPlas_sce$Clust_Knn20,
+                         "2", "3",
+                         de_type="wilcox", dir_str="up",
+                         p_thres=0.01, fdr_thresh=0.01)
+desubtypeB$`2`[!(grepl("RP",desubtypeB$`2`))]
+
+desubtypeB2 <- GetDEgenes(BPlas_sce, BPlas_sce$Clust_Knn20,
+                          "1", "3",
+                          de_type="wilcox", dir_str="up",
+                          p_thres=0.01, fdr_thresh=0.01)
+desubtypeB2$`1`[!(grepl("RP",desubtypeB2$`1`))]
+intersect(panglao_lst$`Immune system`$`B cells`, desubtypeB2$`1`)
+intersect(panglao_lst$`Immune system`$`T cells`, desubtypeB2$`1`)
+intersect(panglao_lst$`Immune system`$`B cells memory`, desubtypeB2$`1`)
+intersect(panglao_lst$`Immune system`$`B cells naive`, desubtypeB2$`1`)
+
+ggDIMRED(BPlas_sce, dimred="TSNE",colour_by="ClustLabel", 
+         col_pal=Immune_Colour_values[names(Immune_Colour_values) %in% BPlas_sce$ClustLabel],
+         ordering=NULL,point_size=1.1,point_alpha=0.7)
+ggDIMRED(BPlas_sce, dimred="TSNE",colour_by="RefinedImmune_label", 
+         col_pal=Immune_Colour_values[names(Immune_Colour_values) %in% BPlas_sce$RefinedImmune_label],
+         ordering=NULL,point_size=1.1,point_alpha=0.7)
+ggDIMRED(BPlas_sce, dimred="TSNE",colour_by="PatientID", 
+         col_pal=Colour_values_PatientID,
+         ordering=NULL,point_size=1.1,point_alpha=0.7)
+BPlas_sce$Clust_Knn20 <- as.character(BPlas_sce$Clust_Knn20)
+ggDIMRED(BPlas_sce, dimred="TSNE",colour_by="Clust_Knn20", 
+         ordering=NULL,point_size=1.1,point_alpha=0.7)
+ggDIMRED(BPlas_sce, dimred="TSNE",colour_by="CD20", 
+         ordering=NULL,point_size=1.8,point_alpha=0.7)
+
+
+
+
+
+
+### --- PLOT BOXPLOTS -----------
+
+plot_boxes <- function(dat_x, gene_id,by="Clust_Knn20",s=10){
+  col_pal <- GetColPal(unique(as.vector(dat_x[[by]])))
+  dat_x <- dat_x[,colnames(dat_x) %in% c("CellID",gene_id, by)]
+  dat_x <- reshape2::melt(dat_x, value.name = "LogCount")
+  gg <- ggplot(data=dat_x, aes_string(x=by,y="LogCount",fill=by))+
+    geom_boxplot()+scale_fill_manual(values=col_pal)+theme_bw()+labs(title=gene_id)+
+    theme(legend.position = "none", plot.title=element_text(size=s, margin=margin(0,0,-1,0)),
+          axis.title=element_blank(), axis.text.x=element_blank())
+  return(gg)
+}
+
+plot_dat <- as.data.frame(colData(BPlas_sce)[,colnames(colData(BPlas_sce)) %in% c("Clust_Knn20", "CellID","RefinedImmune_label","PatientID")])
+for (i_str in markers_to_plot){
+  plot_dat[[i_str]] <- as.vector(logcounts(BPlas_sce[rownames(BPlas_sce)==i_str,]))
+}
+
+boxes_lst <- lapply(markers_to_plot, 
+                    function(x_str){
+                      plot_boxes(plot_dat,x_str,s=10)})
+names(boxes_lst) <- markers_to_plot
+boxes_lst <- boxes_lst[c("IL7R","CD79A","IL3RA",  "GZMB")]
+## IL7R -->> CD127
+ClusTSNE <- ggDIMRED(BPlas_sce, dimred="TSNE",colour_by="Clust_Knn20", 
+                     ordering=NULL,point_size=1.4,point_alpha=0.7)+guides(color=guide_legend(nrow=1,override.aes = list(size=4)))
+plot_leg <- cowplot::get_legend(ClusTSNE)
+
+png(paste0(OUTPUT_FIGURE_DIR,"FIG2_BcellPlasmaMarkers_clust.png"),  width=10, height=6, units="in", res=200)
+cowplot::plot_grid(cowplot::plot_grid(ClusTSNE+MARKER_THEME+theme(legend.position = "none"),
+                                      cowplot::plot_grid(plotlist = boxes_lst, ncol=1)),
+                   plot_leg,ncol=1, rel_heights = c(7,1))
+dev.off()
+
+
+# Plasma: IRF4
+# PAX5, MS4A1 /CD20,BANK1
+# CD79A+B, CD52
+# CD69, IGHM
+# https://www.researchgate.net/profile/Bernard-Vanhove/publication/332424161/figure/fig3/AS:751287083749376@1556132207257/Characterization-of-CD127-expression-among-UC-lamina-propria-cells-A-Representative.ppm
+
+
+##### ----- FIG 2 : T CELL PROJECTILS ------------------------------------
+
+#load(file=paste0(SAVEDATA_DIR,"T_sce.Rdata")) #T_reNorm_sce
+#T_reNorm_sce$CD4pos <- as.vector(counts(T_reNorm_sce[rownames(T_reNorm_sce) == "CD4",])>0)
+#T_reNorm_sce$CD4pos <- ifelse(T_reNorm_sce$CD4pos, "pos", "neg")
+#T_reNorm_sce$CD8pos <- as.vector(colSums(counts(T_reNorm_sce[rownames(T_reNorm_sce) %in% c("CD8A", "CD8B"),])>0))
+#T_reNorm_sce$CD8pos <- replace(T_reNorm_sce$CD8pos, T_reNorm_sce$CD8pos %in% c(1,2), "pos")
+#T_reNorm_sce$CD8pos <- replace(T_reNorm_sce$CD8pos, T_reNorm_sce$CD8pos == 0, "neg")
+#T_merged_sce <- SeuratIntegrate(T_reNorm_sce, "SeqRun")
+#T_merged_sce <- altExp(T_reNorm_sce, "merged")
+#T_merged_sce$CD4pos <- as.vector(setNames(T_reNorm_sce$CD4pos, T_reNorm_sce$CellID)[T_merged_sce$CellID])
+#T_merged_sce$CD8pos <- as.vector(setNames(T_reNorm_sce$CD8pos, T_reNorm_sce$CellID)[T_merged_sce$CellID])
+#T_merged_sce$ProjecTILs_pred <- as.vector(setNames(T_reNorm_sce$ProjecTILs_pred, T_reNorm_sce$CellID)[T_merged_sce$CellID])
+#altExp(T_reNorm_sce, "merged") <- T_merged_sce
+#save(T_reNorm_sce,file=paste0(SAVEDATA_DIR,"T_sce.Rdata"))
+
+  
+
+load(file=paste0(SAVEDATA_DIR,"NKT_sce.Rdata"))
+NKT_sce$CD4pos <- as.vector(counts(NKT_sce[rownames(NKT_sce) == "CD4",])>0)
+NKT_sce$CD4pos <- ifelse(NKT_sce$CD4pos, "pos", "neg")
+NKT_sce$CD8pos <- as.vector(colSums(counts(NKT_sce[rownames(NKT_sce) %in% c("CD8A", "CD8B"),])>0))
+NKT_sce$CD8pos <- replace(NKT_sce$CD8pos, NKT_sce$CD8pos %in% c(1,2), "pos")
+NKT_sce$CD8pos <- replace(NKT_sce$CD8pos, NKT_sce$CD8pos == 0, "neg")
+
+table(NKT_sce[,NKT_sce$CD4pos == "pos"]$ProjecTILs_pred)
+table(NKT_sce[,NKT_sce$CD8pos == "pos"]$ProjecTILs_pred)
+table(NKT_sce$ProjecTILs_pred)
+
+library(dplyr)
+library(tidyr)
+
+##
+## "The predictions were refined based on CD4/CD8 expression.
+##  CD4+ cells that were predicted to be CD8
+##  and CD8+ cells predicted to be Th1/Tfh/CD4 were excluded"
+##
+
+NKT_sce$ProjecTILs_pred <- replace(NKT_sce$ProjecTILs_pred, 
+                            (NKT_sce$ProjecTILs_pred %in% c("Tfh", "Th1", "CD4_NaiveLike")) &
+                               (NKT_sce$CD8pos == "pos"),
+                                    "Excluded")
+NKT_sce$ProjecTILs_pred <- replace(NKT_sce$ProjecTILs_pred, 
+                                   (grepl("CD8",NKT_sce$ProjecTILs_pred )) &
+                                     (NKT_sce$CD4pos == "pos"),
+                                   "Excluded")
+
+plot_dat <- as.data.frame(colData(NKT_sce)[,colnames(colData(NKT_sce)) 
+                                                %in% c("ProjecTILs_pred", "PatientID", "CellID", "ClustHVG_Knn20")])
+#plot_dat <- plot_dat[!(is.na(plot_dat$ProjecTILs_pred)),]
+#plot_dat$ProjecTILs_pred  <- plot_dat$ProjecTILs_pred %>% replace_na("Unknown")
+library(dplyr)
+count_pct <- function(df) {
+  return(
+    df %>%
+      tally %>% 
+      mutate(n_pct = 100*n/sum(n))
+  )
+}
+plot_dat <- plot_dat %>% group_by(PatientID,ProjecTILs_pred) %>% count_pct
+#plot_dat <- plot_dat %>% group_by(PatientID,ProjecTILs_pred) %>% tally() #count(ProjecTILs_pred)
+plot_dat$PatientID <- factor(plot_dat$PatientID, levels=c("BCB66","BCB112","BCB139","BCB20","BCB21","BCB114","BCB90"))
+plot_dat$ProjecTILs_pred <- factor(plot_dat$ProjecTILs_pred,
+                                   levels=c("CD8_NaiveLike", "CD8_EarlyActiv", "CD8_EffectorMemory",
+                                            "Th1","CD4_NaiveLike","Tfh", "NK_cells", "Excluded"))
+
+png(paste0(OUTPUT_FIGURE_DIR, "FIG2_NKT_ProjecTILs_byPatient.png"), width=1800,height=1200,res=260)
+ggplot(data=plot_dat, aes(x=ProjecTILs_pred, y=n_pct, fill=PatientID))+
+  geom_bar(position="dodge", stat="identity",width=0.9,colour="black",size=0.1)+
+  labs(y="% of Patient Cells", x="")+
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=12), axis.ticks.x = element_blank())+
+  scale_fill_manual(values=Colour_values_PatientID[c("BCB66","BCB112","BCB139","BCB20","BCB21","BCB114","BCB90")])+
+  scale_y_continuous(expand = c(0, 0), limits = c(0,100))+scale_x_discrete(expand=c(0,0))
+dev.off()
+
+
+pdf(paste0(OUTPUT_FIGURE_DIR, "FIG2_NKT_ProjecTILs_byPatient.pdf"),width=10, height=6)
+ggplot(data=plot_dat, aes(x=ProjecTILs_pred, y=n_pct, fill=PatientID))+
+  geom_bar(position="dodge", stat="identity",width=0.9,colour="black",size=0.1)+
+  labs(y="% of Patient Cells", x="")+
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=12), axis.ticks.x = element_blank())+
+  scale_fill_manual(values=Colour_values_PatientID[c("BCB66","BCB112","BCB139","BCB20","BCB21","BCB114","BCB90")])+
+  scale_y_continuous(expand = c(0, 0), limits = c(0,100))+scale_x_discrete(expand=c(0,0))
+dev.off()
+
+
+pdf(paste0(OUTPUT_FIGURE_DIR, "FIG2_NKT_ProjecTILs_byPatient_80lim.pdf"),width=10, height=6)
+ggplot(data=plot_dat, aes(x=ProjecTILs_pred, y=n_pct, fill=PatientID))+
+  geom_bar(position="dodge", stat="identity",width=0.9,colour="black",size=0.1)+
+  labs(y="% of Patient Cells", x="")+
+  theme(axis.text.x = element_text(angle=45, hjust=1, size=12), axis.ticks.x = element_blank())+
+  scale_fill_manual(values=Colour_values_PatientID[c("BCB66","BCB112","BCB139","BCB20","BCB21","BCB114","BCB90")])+
+  scale_y_continuous(expand = c(0, 0), limits = c(0,85))+scale_x_discrete(expand=c(0,0))
+dev.off()
+
+
+
+
+
+
+##### ----- FIG 2 : UNASSIGNED CLUSTER >> PLASMA B CELLS ------------------------------------
+
+source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/scfunc/scWrangle.R")
+
+load(file=paste(SAVEDATA_DIR,"Mega_Immune_BCB_sce.Rdata", sep="")) # MegaBCB_Immune
+
+XX <- MegaBCB_Immune[rownames(MegaBCB_Immune)[!(grepl("RPL|MT|RP", rownames(MegaBCB_Immune)))],]
+out <- pairwiseWilcox(logcounts(XX),XX$RefinedImmune_label)
+comb <- combineMarkers(out$statistics, out$pairs, effect.field="AUC")
+unassigned_de <- as.data.frame(comb[["Unassigned"]])
+rownames(unassigned_de[unassigned_de$Top<=50,])
+
+plotReducedDim(MegaBCB_Immune, dimred="TSNE", colour_by = "RefinedImmune_label")
+
+plotReducedDim(MegaBCB_Immune, dimred="TSNE", colour_by = "plasma_ss")
+plotReducedDim(MegaBCB_Immune, dimred="TSNE", colour_by = "JCHAIN")
+#J-chain has been described as a marker of mucosal-targeted plasma cells
+#https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4198949/
+
+### ---- Score with panglao
+source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/scfunc/scSigs.R")
+library(singscore)
+plasma_sig <- panglao_lst$`Immune system`$`Plasma cells`
+genesigs <- filter_gs(list(plasma=plasma_sig), rownames(MegaBCB_Immune))
+genesigs <- Check_gs_input(genesigs, desired_class = "GeneSet")
+dat_x <- GetTPM_sc(sce_obj)
+rankData <- rankGenes(as.matrix(logcounts(MegaBCB_Immune)), stableGenes = getStableGenes(5,type="carcinoma", id="geneid"))
+score_df <- multiScore(rankData, upSetColc =genesigs,centerScore =FALSE)
+output_df <- as.data.frame(t(score_df$Scores))
+MegaBCB_Immune$plasma_ss <- output_df$plasma
+
+### ---- Sankey
+source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/Rfunc/Sankey.R")
+YY=MegaBCB_Immune[,MegaBCB_Immune$RefinedImmune_label=="Unassigned"]
+
+sort(table(MegaBCB_Immune[,MegaBCB_Immune$RefinedImmune_label=="Unassigned"]$CellAtlasFine_labels))
+sort(table(MegaBCB_Immune[,MegaBCB_Immune$RefinedImmune_label=="Unassigned"]$CellAtlas_labels))
+sort(table(MegaBCB_Immune[,MegaBCB_Immune$RefinedImmune_label=="Unassigned"]$CellAtlas_labels))
+sort(table(MegaBCB_Immune[,MegaBCB_Immune$RefinedImmune_label=="Unassigned"]$CellAtlas_labels))
+
+### ---- Try other references
+library(celldex)
+library(SingleR)
+ref <- MonacoImmuneData()
+singleR_out <- SingleR::SingleR(MegaBCB_Immune, ref, ref$label.main)
+singleR_out_fine <- SingleR::SingleR(MegaBCB_Immune, ref, ref$label.fine)
+sort(table(singleR_out_fine$labels[MegaBCB_Immune$RefinedImmune_label=="Unassigned"]))
+ref <- scRNAseq::ZilionisLungData()
+
+### ---- Check andy data
+load(file="/stornext/Home/data/allstaff/w/whitfield.h/data_load/sc_datasets/smyth_sce_4patientsALL.RData")
+source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/scfunc/scProcess.R")
+plotReducedDim(smyth_sce, dimred="TSNE", colour_by = "celltype")
+smyth_sce <- smyth_sce[,smyth_sce$celltype %in% c("B cells","Myeloid","T cells","Plasma cells", "DCs","TAMs")]
+smyth_sce <- GetAnnot(smyth_sce)
+smyth_sce <- smyth_sce[!(is.na(as.vector(rowData(smyth_sce)$SYMBOL))),]
+smyth_sce <- smyth_sce[!(duplicated(rowData(smyth_sce)$SYMBOL)),]
+rownames(smyth_sce) <- rowData(smyth_sce)$SYMBOL
+
+mpe_obj <- as.Seurat(MegaBCB_Immune)
+smyth_obj <- as.Seurat(smyth_sce)
+
+features <- SelectIntegrationFeatures(object.list = list(mpe_obj,smyth_obj))
+enrich.anchors <- FindIntegrationAnchors(object.list = list(mpe_obj,smyth_obj), anchor.features = features)
+smyth.combined <- IntegrateData(anchorset = enrich.anchors)
+sce_merged <- as.SingleCellExperiment(smyth.combined)
+sce_merged <- RunDimRed(sce_merged)
+sce_merged <- ClusterKNN(sce_merged, K=20)
+
+
+celltype_dict <- c(setNames(MegaBCB_Immune$RefinedImmune_label, MegaBCB_Immune$CellID), setNames(smyth_sce$celltype, smyth_sce$CellID))
+sce_merged$CellType <- as.vector(celltype_dict[colnames(sce_merged)])
+patient_dict <- c(setNames(MegaBCB_Immune$PatientID, MegaBCB_Immune$CellID), setNames(smyth_sce$group, smyth_sce$CellID))
+sce_merged$Patient <- as.vector(patient_dict[colnames(sce_merged)])
+plotReducedDim(sce_merged, dimred="TSNE", colour_by = "Clust_Knn20", point_alpha=0.7, point_size=1)
+
+save(sce_merged,file="/stornext/Home/data/allstaff/w/whitfield.h/data_load/sc_datasets/MPEsmyth_ImmuneMerge_sce.RData")
+
+
+
+
+

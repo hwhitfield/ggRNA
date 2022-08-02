@@ -1,0 +1,908 @@
+######################################################################################################
+##
+##  BENCHMARKING
+##
+
+setwd("/stornext/Home/data/allstaff/w/whitfield.h/scDECAF/")
+
+### Load functions, libraries an directories
+if (substr(getwd(), 2, 9) == "stornext"){
+  
+  source("./scripts/BenchmarkingScripts/BenchmarkFunctions.R")
+  source("./scripts/scDECAF_devel.R")
+ # source("./scripts/InstallPackages_scDECAF.R")
+  datasetsFolder <- "./datasets/"
+  saveFolder <- "/stornext/Home/data/allstaff/w/whitfield.h/scDECAF/data/"
+  figureFolder <- "/stornext/Home/data/allstaff/w/whitfield.h/scDECAF/figures/benchmarking_phenotype/"
+  
+} else {
+  
+  source("W:\\scDECAF\\scripts\\BenchmarkFunctions.R")
+  source("W:\\scDECAF\\scripts\\scDECAF_devel.R")
+ # source("W:\\scDECAF\\scripts\\InstallPackages_scDECAF.R")
+  datasetsFolder <- "W:\\scDECAF\\datasets\\"
+  saveFolder <- "W:\\scDECAF\\data\\"
+  figureFolder <- "W:\\scDECAF\\figures\\benchmarking_phenotype\\"
+}
+
+#install.packages("viridisLite")
+
+requiredPackages <-
+  c("ggplot2",
+    "DropletUtils",
+    "sctransform",
+    "Seurat",
+    "SingleCellExperiment",
+    "scater",
+    "scran",
+    "scRNAseq",
+    "tidyverse",
+    "PMA",
+    "GSEABase",
+    "VISION",
+    "scDECAF", "scde", "AUCell", "org.Hs.eg.db"
+  )
+
+for(pkg in requiredPackages){
+  suppressWarnings(suppressMessages(library(pkg, character.only = T)))
+}
+
+######################################################################################################
+### 
+###  LOAD DATA                                            
+###
+
+
+### --- scRNAseq Datasets
+
+# baron <- readRDS(paste0(datasetsFolder, "baron-human.rds")) # Droplet based
+#xin <- readRDS(paste0(datasetsFolder, "xin.rds"))
+#seger <- readRDS(paste0(datasetsFolder, "segerstolpe.rds"))
+#muraro <- readRDS(paste0(datasetsFolder, "muraro.rds"))
+
+
+
+##### ----- Get gene sets
+
+HM_genesets <- GetMSigDB(database="Hallmarks")
+C2_genesets <- GetMSigDB(database="C2")
+MSigDB <- GetMSigDB(database="Both")
+MSigDB_SC <- GetMSigDB(database="SC")
+
+######################################################################################################
+### 
+###  IZAR ET AL. DATA                                      
+###
+
+
+
+### Data
+load(file=paste(datasetsFolder,"Izar_sce.Rdata", sep=""))
+
+
+### Genesets
+
+KEGG_genesets <- C2_genesets[names(C2_genesets)[grepl("KEGG_", names(C2_genesets))]]
+BIOCARTA_genesets <- C2_genesets[names(C2_genesets)[grepl("BIOCARTA_", names(C2_genesets))]]
+PID_genesets <- C2_genesets[names(C2_genesets)[grepl("PID_", names(C2_genesets))]]
+PID_genesets <- PID_genesets[names(PID_genesets)[!(grepl("REACTOME_", names(PID_genesets)))]]
+
+genesigs_obj_KEGG <- MakeVisionObject(KEGG_genesets, biDirection=FALSE)
+genesigs_obj_PID <- MakeVisionObject(PID_genesets, biDirection=FALSE)
+genesigs_obj_BIOC <- MakeVisionObject(BIOCARTA_genesets, biDirection=FALSE)
+PID_Names <- unlist(lapply(genesigs_obj_PID, function(x){attributes(x)$name}))
+KEGG_Names <- unlist(lapply(genesigs_obj_KEGG, function(x){attributes(x)$name}))
+BIOCARTA_Names <- unlist(lapply(genesigs_obj_BIOC, function(x){attributes(x)$name}))
+
+#C2_trim <- C2_genesets[names(C2_genesets)[!(grepl("KEGG_|BIOCARTA_|REACTOME_|PID_|TARGETS", names(C2_genesets)))]]
+#genesigs_obj_C2trim <- MakeVisionObject(C2_trim, biDirection=TRUE)
+
+
+score_lst <- list()
+
+genesets = list(KEGG_genesets, BIOCARTA_genesets, PID_genesets)
+geneset_names = c("KEGG", "BIOCARTA", "PID", "trimmedC2")
+genesetThresh=5
+standardise = TRUE
+for (i in 1:length(genesets)){
+  
+  genesetList <- genesets[[i]]
+  dat_obj <- Izar_sce[intersect(rownames(Izar_sce), unique(as.vector(unlist(genesetList)))),]
+  
+  ## Get HVGs
+  dat_varModel <-  scran::modelGeneVar(dat_obj, block=dat_obj$CellType, density.weights=FALSE)
+  features_lst <- scran::getTopHVGs(dat_varModel , n=3000)
+
+  ## Run scDECAF
+  print(paste0("Running scDECAF on : ", geneset_names[[i]], " "))
+  
+  ### --- Subset data
+  data_df <- as.matrix(logcounts(dat_obj))
+  data_df <- data_df[features_lst[features_lst %in% rownames(data_df)],]
+  dat_obj <- dat_obj[features_lst[features_lst %in% rownames(data_df)],]
+  features_lst <- features_lst[features_lst %in% rownames(data_df)]
+  
+  ### --- Cell embeddings
+  dat_obj <- scater::runUMAP(dat_obj, scale=FALSE,  exprs_values = "logcounts")
+  cell_embed = as.data.frame(reducedDim(dat_obj, "UMAP"))
+  
+  ### --- scDECAF
+  target <- scDECAF::genesets2ids(data_df[match(features_lst, rownames(data_df)),], genesetList) # genesetList=pb_markers
+  
+  genesetDrop <- unlist(lapply(as.vector(colSums(target)), function(x){ifelse(x<genesetThresh, FALSE, TRUE)}))
+  target <- target[,genesetDrop]
+  
+  iOutput <- scDECAF::scDECAF(data = data_df, gs = target, standardize = standardise, 
+                             hvg = features_lst, k = 10, embedding = cell_embed, cca.k=10,
+                             n_components = 10, max_iter = 2, thresh = 0.5)
+  
+  iScore_df <- attr(iOutput,"raw_scores")
+  score_lst[[paste0("scDECAF_","scran","_",geneset_names[[i]])]] <- iScore_df
+}
+
+
+
+IZAR_scran_SC_score_lst <- score_lst
+
+save(IZAR_scran_SC_score_lst,# PBMC_sctransform_HM_score_lst, 
+     file=paste(saveFolder,"scDECAF_Izar_benchmarking_SC_scores.Rdata", sep=""))
+
+
+
+
+## IZAR WITH PRUNING --------------------------------------
+
+### --- Get gene overlap
+dat_obj <- Izar_sce[intersect(rownames(Izar_sce), unique(as.vector(unlist(C2_genesets)))),]
+
+### --- Get HVGs
+dat_varModel <-  scran::modelGeneVar(dat_obj, block=dat_obj$CellType, density.weights=FALSE)
+features_lst <- scran::getTopHVGs(dat_varModel , n=3000)
+
+### --- Subset data
+dat_obj <- dat_obj[features_lst[features_lst %in% rownames(dat_obj)],]
+features_lst <- features_lst[features_lst %in% rownames(dat_obj)]
+
+### --- Cell embeddings
+dat_obj <- scater::runUMAP(dat_obj, scale=FALSE,  exprs_values = "logcounts")
+cell_embed = as.data.frame(reducedDim(dat_obj, "UMAP"))
+
+### --- Remove missing genes in genesets
+genes_to_keep <- intersect(rownames(dat_obj), unique(as.vector(unlist(C2_genesets))))
+C2_genesets <- C2_genesets[lapply(C2_genesets, length) > 10]
+C2_genesets_filt <- lapply(C2_genesets, function(x){x[x %in% rownames(dat_obj)]})
+
+
+### --- Prune genesets
+pruned_genesets <- scDECAF::pruneGenesets(data=as.matrix(logcounts(Izar_sce)), 
+                                          genesetlist = C2_genesets_filt,
+                                          hvg=features_lst,
+                                          embedding =cell_embed,
+                                          min_gs_size =10,lambda = exp(-2),
+                                          suppress_plot=TRUE)
+
+pruned_genesets <- as.character(pruned_genesets)
+# From 5529 genesets down to 91
+
+data_df <- as.matrix(logcounts(dat_obj))
+target <- scDECAF::genesets2ids(data_df[match(features_lst, rownames(data_df)),], C2_genesets_filt[pruned_genesets]) # genesetList=pb_markers
+
+genesetThresh=5
+standardise=TRUE
+genesetDrop <- unlist(lapply(as.vector(colSums(target)), function(x){ifelse(x<genesetThresh, FALSE, TRUE)}))
+target <- target[,genesetDrop]
+output <- scDECAF::scDECAF(data = data_df, gs = target, standardize = standardise, 
+                           hvg = features_lst, k = 10, embedding = cell_embed, cca.k=10,
+                           n_components = 10, max_iter = 2, thresh = 0.5)
+IZAR_scran_scDECAFscores_pruned <- attr(output,"raw_scores")
+
+save(IZAR_scran_SC_score_lst, IZAR_scran_scDECAFscores_pruned, 
+     file=paste(saveFolder,"scDECAF_Izar_benchmarking_SC_scores.Rdata", sep=""))
+
+
+
+## SAVE UMAP FOR SCTRANSFORM --------------------------------------
+load(file=paste(datasetsFolder,"Izar_sce.Rdata", sep=""))
+
+### --- Get gene overlap
+dat_obj <- Izar_sce[intersect(rownames(Izar_sce), unique(as.vector(unlist(C2_genesets)))),]
+
+### --- Get HVGs
+dat_varModel <-  scran::modelGeneVar(dat_obj, block=dat_obj$CellType, density.weights=FALSE)
+features_lst <- scran::getTopHVGs(dat_varModel , n=3000)
+
+### --- Subset data
+dat_obj <- dat_obj[features_lst[features_lst %in% rownames(dat_obj)],]
+features_lst <- features_lst[features_lst %in% rownames(dat_obj)]
+
+### --- Cell embeddings
+dat_obj <- scater::runUMAP(dat_obj, scale=FALSE,  exprs_values = "logcounts")
+cell_embed = as.data.frame(reducedDim(dat_obj, "UMAP"))
+
+coldat_izar <- as.data.frame(colData(Izar_sce))
+coldat_izar$CellID <- rownames(coldat_izar)
+cell_embed$CellID <- rownames(cell_embed)
+cell_embed$CellType <- as.vector(setNames(coldat_izar$CellType, coldat_izar$CellID)[cell_embed$CellID])
+cell_embed$SampleID <- as.vector(setNames(coldat_izar$sample_ID, coldat_izar$CellID)[cell_embed$CellID])
+cell_embed$Patient <- as.vector(setNames(coldat_izar$patient, coldat_izar$CellID)[cell_embed$CellID])
+cell_embed$Clust <- as.vector(setNames(coldat_izar$clst, coldat_izar$CellID)[cell_embed$CellID])
+save(cell_embed, file=paste0(saveFolder, "CookedEMT_IzarUMAP_embed.Rdata")) 
+
+
+
+######################################################################################################
+### 
+###  BENCHMARKING -- EMT data                                       
+###
+
+load(file=paste(saveFolder,"scDECAF_EMT_benchmarking_objects.Rdata", sep=""))
+
+
+
+### --- HM
+TrapEMT_scran_HM_score_lst <- Run_Routine(TrapEMT_obj_scran, HM_genesets, norm_type = "scran",hvg_n = c(3000))  ## hvg_n = c(1000, 2000, 3000, 10000)
+
+save(TrapEMT_scran_HM_score_lst,  
+     file=paste(saveFolder,"scDECAF_EMT_benchmarking_scores.Rdata", sep=""))
+
+TrapEMT_sctransform_HM_score_lst <- Run_Routine(TrapEMT_obj_sctransform, HM_genesets, norm_type = "sctransform",hvg_n = c(3000))
+
+
+### --- C2
+TrapEMT_scran_C2_score_lst <- Run_Routine(TrapEMT_obj_scran, C2_genesets, norm_type = "scran",hvg_n = c(1000, 2000, 3000, 10000))  ## one of "scran" or "sctransform")
+TrapEMT_sctransform_C2_score_lst <- Run_Routine(PBMC_obj_sctransform, C2_genesets, norm_type = "sctransform")
+
+
+save(TrapEMT_scran_HM_score_lst, TrapEMT_sctransform_HM_score_lst, 
+     # TrapEMT_scran_C2_score_lst, TrapEMT_sctransform_C2_score_lst, 
+     file=paste(saveFolder,"scDECAF_EMT_benchmarking_scores.Rdata", sep=""))
+
+
+#### ---- Alternative
+
+## Get norm counts
+if (!("normcounts" %in% names(assays(TrapEMT_sce)))) {
+  TrapEMT_sce <- scater::logNormCounts(TrapEMT_sce, log=FALSE, exprs_values = "counts")
+}
+colnames(TrapEMT_sce) <- TrapEMT_sce$cell
+
+## Get VISION objects
+genesigs_obj_HM <- MakeVisionObject(HM_genesets, biDirection=TRUE)
+
+#names(C2_genesets)[!(grepl("REACTOME_", names(C2_genesets)))]
+KEGG_genesets <- C2_genesets[names(C2_genesets)[grepl("KEGG_", names(C2_genesets))]]
+BIOCARTA_genesets <- C2_genesets[names(C2_genesets)[grepl("BIOCARTA_", names(C2_genesets))]]
+PID_genesets <- C2_genesets[names(C2_genesets)[grepl("PID_", names(C2_genesets))]]
+PID_genesets <- PID_genesets[names(PID_genesets)[!(grepl("REACTOME_", names(PID_genesets)))]]
+C2_trim <- C2_genesets[names(C2_genesets)[!(grepl("KEGG_|BIOCARTA_|REACTOME_|PID_|TARGETS", names(C2_genesets)))]]
+
+genesigs_obj_KEGG <- MakeVisionObject(KEGG_genesets, biDirection=FALSE)
+genesigs_obj_C2 <- MakeVisionObject(C2_genesets, biDirection=TRUE)
+genesigs_obj_BIOC <- MakeVisionObject(BIOCARTA_genesets, biDirection=FALSE)
+genesigs_obj_PID <- MakeVisionObject(PID_genesets, biDirection=FALSE)
+genesigs_obj_C2trim <- MakeVisionObject(C2_trim, biDirection=FALSE)
+HM_Names <- unlist(lapply(genesigs_obj_HM, function(x){attributes(x)$name}))
+C2_Names <- unlist(lapply(genesigs_obj_C2, function(x){attributes(x)$name}))
+PID_Names <- unlist(lapply(genesigs_obj_PID, function(x){attributes(x)$name}))
+KEGG_Names <- unlist(lapply(genesigs_obj_KEGG, function(x){attributes(x)$name}))
+BIOCARTA_Names <- unlist(lapply(genesigs_obj_BIOC, function(x){attributes(x)$name}))
+
+### --- Run VISION
+
+### --- HM
+VISION_Obj_HM <- Vision(data = normcounts(TrapEMT_sce), signatures = genesigs_obj_HM, pool=FALSE, min_signature_genes=10) #, meta=MetaData)
+options(mc.cores = 2)
+VISION_RESULTS_HM <- analyze(VISION_Obj_HM)
+
+## Append scores
+load(file=paste(datasetsFolder,"TrapEMT_sce.Rdata", sep=""))
+for (iSig in colnames(getSignatureScores(VISION_RESULTS_HM))){
+  sigScores <- getSignatureScores(VISION_RESULTS_HM)[, iSig]
+  TrapEMT_sce[[iSig]] <- sigScores
+}
+iScore_df_HM <- as.data.frame(colData(TrapEMT_sce)[, colnames(colData(TrapEMT_sce)) %in% HM_Names])
+save(TrapEMT_sce, file=paste(datasetsFolder,"TrapEMT_sce.Rdata", sep=""))
+
+### ---  KEGG
+data_obj <- normcounts(TrapEMT_sce)
+data_obj <- data_obj[rownames(data_obj) %in% unique(unlist(KEGG_genesets)),]
+data_obj <- data_obj[rowSums(data_obj)>0,]
+VISION_Obj_KEGG <- Vision(data = data_obj, signatures = genesigs_obj_KEGG, pool=FALSE, min_signature_genes=20, sig_gene_threshold=0.1) #, meta=MetaData)
+options(mc.cores = 2)
+VISION_RESULTS_KEGG <- analyze(VISION_Obj_KEGG)
+## Append scores
+for (iSig in colnames(getSignatureScores(VISION_RESULTS_KEGG))){
+  sigScores <- getSignatureScores(VISION_RESULTS_KEGG)[, iSig]
+  TrapEMT_sce[[iSig]] <- sigScores
+}
+iScore_df_KEGG <- as.data.frame(colData(TrapEMT_sce)[, colnames(colData(TrapEMT_sce)) %in% KEGG_Names])
+save(TrapEMT_sce, file=paste(datasetsFolder,"TrapEMT_sce.Rdata", sep=""))
+
+
+### ---  BIOCARTA
+data_obj <- normcounts(TrapEMT_sce)
+data_obj <- data_obj[rownames(data_obj) %in% unique(unlist(BIOCARTA_genesets)),]
+data_obj <- data_obj[rowSums(data_obj)>0,]
+VISION_Obj_BIOC <- Vision(data = data_obj, signatures = genesigs_obj_BIOC, pool=FALSE, min_signature_genes=5, sig_gene_threshold=0.1) #, meta=MetaData)
+options(mc.cores = 2)
+VISION_RESULTS_BIOC <- analyze(VISION_Obj_BIOC)
+## Append scores
+for (iSig in colnames(getSignatureScores(VISION_RESULTS_BIOC))){
+  sigScores <- getSignatureScores(VISION_RESULTS_BIOC)[, iSig]
+  TrapEMT_sce[[iSig]] <- sigScores
+}
+iScore_df_BIOC <- as.data.frame(colData(TrapEMT_sce)[, colnames(colData(TrapEMT_sce)) %in% BIOCARTA_Names])
+save(TrapEMT_sce, file=paste(datasetsFolder,"TrapEMT_sce.Rdata", sep=""))
+
+
+### ---  C2 -- trimmed
+data_obj <- normcounts(TrapEMT_sce)
+data_obj <- data_obj[rownames(data_obj) %in% unique(unlist(C2_trim)),]
+data_obj <- data_obj[rowSums(data_obj)>0,]
+VISION_Obj_C2trim <- Vision(data = data_obj, signatures = genesigs_obj_C2trim, pool=FALSE, min_signature_genes=50, sig_gene_threshold=0.3) #, meta=MetaData)
+options(mc.cores = 2)
+VISION_RESULTS_C2trim <- analyze(VISION_Obj_C2trim)
+## Append scores
+for (iSig in colnames(getSignatureScores(VISION_RESULTS_C2trim))){
+  sigScores <- getSignatureScores(VISION_RESULTS_C2trim)[, iSig]
+  TrapEMT_sce[[iSig]] <- sigScores
+}
+
+
+### ---  PID
+data_obj <- normcounts(TrapEMT_sce)
+data_obj <- data_obj[rownames(data_obj) %in% unique(unlist(PID_genesets)),]
+data_obj <- data_obj[rowSums(data_obj)>0,]
+VISION_Obj_PID <- Vision(data = data_obj, signatures = genesigs_obj_PID, pool=FALSE, min_signature_genes=20, sig_gene_threshold=0.1) #, meta=MetaData)
+options(mc.cores = 2)
+VISION_RESULTS_PID <- analyze(VISION_Obj_PID)
+## Append scores
+for (iSig in colnames(getSignatureScores(VISION_RESULTS_PID))){
+  sigScores <- getSignatureScores(VISION_RESULTS_PID)[, iSig]
+  TrapEMT_sce[[iSig]] <- sigScores
+}
+
+
+save(TrapEMT_sce, file=paste(datasetsFolder,"TrapEMT_sce.Rdata", sep=""))
+
+TrapEMT_coldata <- as.data.frame(colData(TrapEMT_sce))
+save(TrapEMT_coldata, file=paste(datasetsFolder,"TrapEMT_coldata.Rdata", sep=""))
+
+
+
+###### ------- WITH PRUNING
+#load(file=paste(datasetsFolder,"TrapEMT_sce.Rdata", sep=""))
+load(file=paste(saveFolder,"scDECAF_EMT_benchmarking_objects.Rdata", sep="")) # TrapEMT_obj_scran, TrapEMT_obj_sctransform
+rm(TrapEMT_obj_sctransform)
+C2_genesets <- GetMSigDB(database="C2")
+
+### --- Get gene overlap
+dat_obj <- TrapEMT_obj_scran[intersect(rownames(TrapEMT_obj_scran), unique(as.vector(unlist(C2_genesets)))),]
+rm(TrapEMT_obj_scran)
+dat_obj$condition <- paste0(dat_obj$spatial_id, dat_obj$treatment_id)
+
+### --- Get HVGs
+dat_varModel <-  scran::modelGeneVar(dat_obj, block=dat_obj$condition, density.weights=FALSE)
+features_lst <- scran::getTopHVGs(dat_varModel , n=3000)
+
+### --- Subset data
+dat_obj <- dat_obj[features_lst[features_lst %in% rownames(dat_obj)],]
+features_lst <- features_lst[features_lst %in% rownames(dat_obj)]
+
+### --- Cell embeddings
+dat_obj <- scater::runUMAP(dat_obj, scale=FALSE,  exprs_values = "logcounts")
+cell_embed = as.data.frame(reducedDim(dat_obj, "UMAP"))
+
+### --- Remove missing genes in genesets
+genes_to_keep <- intersect(rownames(dat_obj), unique(as.vector(unlist(C2_genesets))))
+C2_genesets <- C2_genesets[lapply(C2_genesets, length) > 10]
+C2_genesets_filt <- lapply(C2_genesets, function(x){x[x %in% rownames(dat_obj)]})
+
+
+### --- Prune genesets
+pruned_genesets <- scDECAF::pruneGenesets(data=as.matrix(logcounts(dat_obj)), 
+                                          genesetlist = C2_genesets_filt,
+                                          hvg=features_lst,
+                                          embedding =cell_embed,
+                                          min_gs_size =10,lambda = exp(-2),
+                                          suppress_plot=TRUE)
+
+pruned_genesets <- as.character(pruned_genesets)
+# From 5529 genesets down to 91
+
+data_df <- as.matrix(logcounts(dat_obj))
+target <- scDECAF::genesets2ids(data_df[match(features_lst, rownames(data_df)),], C2_genesets_filt[pruned_genesets]) # genesetList=pb_markers
+
+genesetThresh=5
+standardise=TRUE
+genesetDrop <- unlist(lapply(as.vector(colSums(target)), function(x){ifelse(x<genesetThresh, FALSE, TRUE)}))
+target <- target[,genesetDrop]
+output <- scDECAF::scDECAF(data = data_df, gs = target, standardize = standardise, 
+                           hvg = features_lst, k = 10, embedding = cell_embed, cca.k=10,
+                           n_components = 10, max_iter = 2, thresh = 0.5)
+TrapEMT_scran_scDECAFscores_pruned <- attr(output,"raw_scores")
+
+
+load(file=paste(saveFolder,"scDECAF_EMT_benchmarking_scores.Rdata", sep=""))
+
+save(TrapEMT_scran_HM_score_lst, TrapEMT_sctransform_HM_score_lst, 
+     TrapEMT_scran_scDECAFscores_pruned,
+     file=paste(saveFolder,"scDECAF_EMT_benchmarking_scores.Rdata", sep=""))
+
+
+
+###### ------- WITH PRUNING -- sctransform
+load(file=paste(saveFolder,"scDECAF_EMT_benchmarking_objects.Rdata", sep="")) # TrapEMT_obj_scran, TrapEMT_obj_sctransform
+rm(TrapEMT_obj_scran)
+C2_genesets <- GetMSigDB(database="C2")
+
+
+### --- Get gene overlap
+dat_obj <- TrapEMT_obj_sctransform[intersect(rownames(TrapEMT_obj_sctransform), unique(as.vector(unlist(C2_genesets)))),]
+rm(TrapEMT_obj_sctransform)
+dat_obj$condition <- paste0(dat_obj$spatial_id, dat_obj$treatment_id)
+
+### --- Get HVGs
+dat_obj <- FindVariableFeatures(dat_obj, selection.method = "vst", nfeatures = 3000)
+features_lst <- VariableFeatures(object = dat_obj)
+
+### --- Subset data
+dat_obj <- dat_obj[features_lst[features_lst %in% rownames(dat_obj)],]
+features_lst <- features_lst[features_lst %in% rownames(dat_obj)]
+
+### --- Cell embeddings
+dat_obj <- RunUMAP(object = dat_obj, features=features_lst, reduction.key = 'sctUMAP_', reduction.name = 'sctumap')
+cell_embed <- as.data.frame(dat_obj@reductions$sctumap@cell.embeddings)
+
+### --- Remove missing genes in genesets
+genes_to_keep <- intersect(rownames(dat_obj), unique(as.vector(unlist(C2_genesets))))
+C2_genesets <- C2_genesets[lapply(C2_genesets, length) > 10]
+C2_genesets_filt <- lapply(C2_genesets, function(x){x[x %in% rownames(dat_obj)]})
+
+
+### --- Prune genesets
+data_df <- GetAssayData(object = dat_obj, slot = 'scale.data')
+data_df <- data_df[features_lst[features_lst %in% rownames(data_df)],]
+features_lst <- features_lst[features_lst %in% rownames(data_df)]
+pruned_genesets <- scDECAF::pruneGenesets(data=data_df, 
+                                          genesetlist = C2_genesets_filt,
+                                          hvg=features_lst,
+                                          embedding =cell_embed,
+                                          min_gs_size =10,lambda = exp(-2),
+                                          suppress_plot=TRUE)
+
+pruned_genesets <- as.character(pruned_genesets)
+# From 5529 genesets down to 91
+
+target <- scDECAF::genesets2ids(data_df[match(features_lst, rownames(data_df)),], C2_genesets_filt[pruned_genesets]) # genesetList=pb_markers
+
+genesetThresh=5
+standardise=TRUE
+genesetDrop <- unlist(lapply(as.vector(colSums(target)), function(x){ifelse(x<genesetThresh, FALSE, TRUE)}))
+target <- target[,genesetDrop]
+output <- scDECAF::scDECAF(data = data_df, gs = target, standardize = standardise, 
+                           hvg = features_lst, k = 10, embedding = cell_embed, cca.k=10,
+                           n_components = 10, max_iter = 2, thresh = 0.5)
+TrapEMT_sctransform_scDECAFscores_pruned <- attr(output,"raw_scores")
+
+
+load(file=paste(saveFolder,"scDECAF_EMT_benchmarking_scores.Rdata", sep=""))
+
+save(TrapEMT_scran_HM_score_lst, TrapEMT_sctransform_HM_score_lst, 
+     TrapEMT_scran_scDECAFscores_pruned, TrapEMT_sctransform_scDECAFscores_pruned,
+     file=paste(saveFolder,"scDECAF_EMT_benchmarking_scores.Rdata", sep=""))
+
+
+
+######################################################################################################
+### 
+###  BENCHMARKING -- EMT CELL LINE DATA                                       
+###
+
+RunCookedEMT_scDECAF <- function(x_dat, genesetList, genesetThresh=5, nVar=3000,standardise = TRUE){
+  
+  ### --- Get HVGs
+  features_lst <- VariableFeatures(object = x_dat)
+  
+  ### --- Subset data
+  data_df <- as.matrix(GetAssayData(object = x_dat, slot = 'scale.data'))
+  data_df <- data_df[features_lst[features_lst %in% rownames(data_df)],]
+  x_dat <- x_dat[features_lst[features_lst %in% rownames(x_dat)],]
+  features_lst <- features_lst[features_lst %in% rownames(data_df)]
+  
+  ### --- Get Embedding
+  x_dat <- RunUMAP(object = x_dat, features=features_lst, reduction.key = 'sctUMAP_', reduction.name = 'sctumap')
+  cell_embed <- as.data.frame(x_dat@reductions$sctumap@cell.embeddings)
+  
+  ### --- Overlapping genes
+  target <- scDECAF::genesets2ids(data_df[match(features_lst, rownames(data_df)),], genesetList) # genesetList=pb_markers
+  genesetDrop <- unlist(lapply(as.vector(colSums(target)), function(x){ifelse(x<genesetThresh, FALSE, TRUE)}))
+  target <- target[,genesetDrop]
+  
+  ### --- Run scDECAF
+  message(paste0("#####  Running scDECAF "))
+  message(paste0(" Standardise : ", standardise))
+  message(paste0(" HVGs : ", as.character(length(features_lst))))
+  message(paste0(" # of Genesets : ", dim(target)[2]))
+  output <- scDECAF::scDECAF(data = data_df, gs = target, standardize = standardise, 
+                             hvg = features_lst, k = 10, embedding = cell_embed, cca.k=10,
+                             n_components = 10, max_iter = 2, thresh = 0.5)
+  
+  return(as.data.frame(attr(output,"raw_scores")))
+}
+
+RunCookedEMT_VISION <- function(x_dat, genesetList){
+  ### --- Remove missing genes in genesets
+  genesetList_filt <- lapply(genesetList, function(x){x[x %in% rownames(x_dat)]})
+  x_dat <- x_dat[intersect(rownames(x_dat), unique(as.vector(unlist(genesetList_filt)))),]
+  
+  ### --- Get non-log norm counts
+  dat_obj <- SingleCellExperiment(assays=list(counts=as.matrix(GetAssayData(x_dat, "counts")), 
+                                              logcounts=as.matrix(GetAssayData(x_dat, "data"))))
+  dat_obj <- scater::logNormCounts(dat_obj, log=FALSE, exprs_values = "counts")
+  VISION_counts <- normcounts(dat_obj)
+  VISION_counts <- VISION_counts[intersect(rownames(VISION_counts), unique(as.vector(unlist(genesetList_filt)))),]
+  genesetList_filt <- lapply(genesetList_filt, function(x){x[x %in% rownames(VISION_counts)]})
+  
+  ### --- VISION objs
+  genesigs_obj <- MakeVisionObject(genesetList_filt, biDirection=FALSE)
+  genesetNames <- unlist(lapply(genesigs_obj, function(x){attributes(x)$name}))
+  VISION_Obj <- Vision(data = VISION_counts, signatures = genesigs_obj, pool=FALSE, min_signature_genes=10)
+  
+  ### --- Run VISION
+  options(mc.cores = 2)
+  VISION_RESULTS <- analyze(VISION_Obj)
+  
+  return(as.data.frame(getSignatureScores(VISION_RESULTS)))
+  
+}
+
+## SCTRANSFORM DATA --------------------------------------
+
+### --- Load data
+load(file=paste0(saveFolder, "CookedEMT_A549List.Rdata")) # EMT_sce_lst_scTransform
+
+
+C2_genesets <- GetMSigDB(database="C2")
+C2_genesets_filt <- C2_genesets[lapply(C2_genesets, length) > 10]
+
+CookedEMT_A549_sctransform_C2filt_score_lst <- list()
+
+
+### --- 1
+x_name = "A549_EGF"
+x_dat <- EMT_sce_lst_scTransform[[x_name]]
+rm(EMT_sce_lst_scTransform)
+message(paste0("Running VISION for ", x_name))
+CookedEMT_A549_sctransform_C2filt_score_lst[[paste0("VISION_","sctransform","_allgenes_", x_name)]] <- RunCookedEMT_VISION(x_dat,
+                                                                                            C2_genesets_filt)
+message(paste0("Running scDECAF for ", x_name))
+CookedEMT_A549_sctransform_C2filt_score_lst[[paste0("scDECAF_","sctransform","_","3k_",x_name)]] <- RunCookedEMT_scDECAF(x_dat,
+                                                                                        C2_genesets_filt)
+rm(x_dat)
+save(CookedEMT_A549_sctransform_C2filt_score_lst, 
+     file=paste(saveFolder,"CookedEMT_A549_benchmarking_scores.Rdata", sep=""))
+
+### --- 2
+load(file=paste0(saveFolder, "CookedEMT_A549List.Rdata"))
+x_name = "A549_TNF"
+x_dat <- EMT_sce_lst_scTransform[[x_name]]
+rm(EMT_sce_lst_scTransform)
+message(paste0("Running VISION for ", x_name))
+CookedEMT_A549_sctransform_C2filt_score_lst[[paste0("VISION_","sctransform","_allgenes_", x_name)]] <- RunCookedEMT_VISION(x_dat,
+                                                                                                                           C2_genesets_filt)
+message(paste0("Running scDECAF for ", x_name))
+CookedEMT_A549_sctransform_C2filt_score_lst[[paste0("scDECAF_","sctransform","_","3k_",x_name)]] <- RunCookedEMT_scDECAF(x_dat,
+                                                                                                                         C2_genesets_filt)
+rm(x_dat)
+save(CookedEMT_A549_sctransform_C2filt_score_lst, 
+     file=paste(saveFolder,"CookedEMT_A549_benchmarking_scores.Rdata", sep=""))
+
+
+### --- 3
+x_name = "TGFB1"
+save(EMT_TGFB1_sctransform_C2filt_score_lst, 
+     file=paste(saveFolder,"CookedEMT_benchmarking_scores.Rdata", sep=""))
+
+load(file=paste(saveFolder,"CookedEMT_benchmarking_scores.Rdata", sep=""))
+
+CookedEMT_A549_sctransform_C2filt_score_lst[[paste0("VISION_","sctransform","_allgenes_", x_name)]] <- EMT_TGFB1_sctransform_C2filt_score_lst$VISION_sctransform_allgenes
+CookedEMT_A549_sctransform_C2filt_score_lst[[paste0("scDECAF_","sctransform","_","3k_",x_name)]] <- EMT_TGFB1_sctransform_C2filt_score_lst$scDECAF_sctransform_hvg_3000
+CookedEMT_A549_sctransform_C2filt_score_lst[[paste0("scDECAF_","sctransform","_","ALL_",x_name)]] <- EMT_TGFB1_sctransform_C2filt_score_lst$scDECAF_sctransform_hvg_ALL
+  
+save(CookedEMT_A549_sctransform_C2filt_score_lst, 
+     file=paste(saveFolder,"CookedEMT_A549_benchmarking_scores.Rdata", sep=""))
+
+
+## SAVE UMAP FOR SCTRANSFORM --------------------------------------
+
+load(file=paste0(saveFolder, "CookedEMT_A549List.Rdata")) # EMT_sce_lst_scTransform
+
+### --- Get HVGs
+x_dat <- EMT_sce_lst_scTransform$A549_TGFB1
+features_lst <- VariableFeatures(object = x_dat)
+
+### --- Subset data
+data_df <- as.matrix(GetAssayData(object = x_dat, slot = 'scale.data'))
+data_df <- data_df[features_lst[features_lst %in% rownames(data_df)],]
+x_dat <- x_dat[features_lst[features_lst %in% rownames(data_df)],]
+features_lst <- features_lst[features_lst %in% rownames(data_df)]
+
+### --- Get Embedding
+x_dat <- RunUMAP(object = x_dat, features=features_lst, reduction.key = 'sctUMAP_', reduction.name = 'sctumap')
+cell_embed <- as.data.frame(x_dat@reductions$sctumap@cell.embeddings)
+
+save(cell_embed, file=paste0(saveFolder, "CookedEMT_A549_TGFB1_sctransform_cell_embed.Rdata")) 
+
+
+
+
+
+## SCTRANSFORM DATA // TGFB1 --------------------------------------
+
+### --- Load data
+load(file=paste0(saveFolder, "CookedEMT_TGFB1List.Rdata")) # EMT_sce_lst_scTransform
+#load(file=paste0(saveFolder, "CookedEMT_A549List.Rdata")) # EMT_sce_lst_scTransform
+
+C2_genesets <- GetMSigDB(database="C2")
+C2_genesets_filt <- C2_genesets[lapply(C2_genesets, length) > 10]
+
+
+CookedEMT_TGFB1_sctransform_C2filt_score_lst <- list()
+
+for (x_name in names(EMT_sce_lst_scTransform)){
+  x_dat <- EMT_sce_lst_scTransform[[x_name]]
+  
+  message(paste0("Running VISION for : ", x_name))
+  CookedEMT_TGFB1_sctransform_C2filt_score_lst[[paste0("VISION_","sctransform","_allgenes_", x_name)]] <- RunCookedEMT_VISION(x_dat,
+                                                                                                                             C2_genesets_filt)
+  message(paste0("Running scDECAF for : ", x_name))
+  CookedEMT_TGFB1_sctransform_C2filt_score_lst[[paste0("scDECAF_","sctransform","_","3k_",x_name)]] <- RunCookedEMT_scDECAF(x_dat,
+                                                                                                                           C2_genesets_filt)
+  message("Save intermediate...")
+  save(CookedEMT_TGFB1_sctransform_C2filt_score_lst, 
+       file=paste(saveFolder,"CookedEMT_TGFB1scores_ALLcellLines.Rdata", sep=""))
+}
+
+## Merge scores
+melted_score_lst <- lapply(names(CookedEMT_TGFB1_sctransform_C2filt_score_lst), function(x_name){
+  message(paste0("Processing ", x_name))
+  info_vec <- strsplit(x_name,"_")[[1]]
+  df_x <- as.data.frame(CookedEMT_TGFB1_sctransform_C2filt_score_lst[[x_name]])
+  df_x$cellID <- rownames(df_x)
+  
+  melted_df_x <- melt(df_x, value.name="score", id.vars="cellID", variable.name = "geneset")
+  n_rows <- dim(melted_df_x)[1]
+  melted_df_x$method <- rep(info_vec[1], n_rows)
+  melted_df_x$norm_method <- rep(info_vec[2], n_rows)
+  melted_df_x$n_genes <- rep(info_vec[3], n_rows)
+  melted_df_x$cellLine <- rep(info_vec[4], n_rows)
+  melted_df_x$stim <- rep(info_vec[5], n_rows)
+  return(melted_df_x)
+})
+
+names(melted_score_lst) <- names(CookedEMT_TGFB1_sctransform_C2filt_score_lst)
+CookedEMT_TGFB1_melt <- rbindlist(melted_score_lst, use.names = TRUE)
+
+## Save
+load(file=paste0("/stornext/Home/data/allstaff/w/whitfield.h/data/_datasets/sc/scEMT_3cellLines/",
+                 "CookedEMT_colData.Rdata")) # colData_comb
+colData_comb <- as.data.frame(colData(Mega_BCB_sce))
+time_dict <- colData_comb$time
+names(time_dict) <- colData_comb$CellID
+pseudotime_dict <- colData_comb$pseudotime
+names(pseudotime_dict) <- colData_comb$CellID
+
+## ADD COLDATA ----------------------
+CookedEMT_TGFB1_melt$time <- as.vector(time_dict[CookedEMT_TGFB1_melt$cellID])
+CookedEMT_TGFB1_melt$pseudotime <- as.vector(pseudotime_dict[CookedEMT_TGFB1_melt$cellID])
+
+save(CookedEMT_TGFB1_melt, 
+     file=paste(saveFolder,"CookedEMT_TGFB1scores_ALLcellLines.Rdata", sep=""))
+
+
+
+## SAVE UMAPS FOR SUPPLEMENTARY --------------------------------------
+
+
+load(file=paste0(saveFolder, "CookedEMT_TGFB1List.Rdata")) 
+EMT_sce_lst_scTransform <- EMT_sce_lst_scTransform[!(names(EMT_sce_lst_scTransform) == "OVCA420_TGFB1")]
+
+for (x_name in names(EMT_sce_lst_scTransform)){
+  ### --- Get HVGs
+  x_dat <- EMT_sce_lst_scTransform[[x_name]]
+  features_lst <- VariableFeatures(object = x_dat)
+  
+  ### --- Subset data
+  data_df <- as.matrix(GetAssayData(object = x_dat, slot = 'scale.data'))
+  data_df <- data_df[features_lst[features_lst %in% rownames(data_df)],]
+  x_dat <- x_dat[features_lst[features_lst %in% rownames(data_df)],]
+  features_lst <- features_lst[features_lst %in% rownames(data_df)]
+  
+  ### --- Get Embedding
+  message(paste0("Running UMAP for ",x_name," with ", length(features_lst), " features"))
+  x_dat <- RunUMAP(object = x_dat, features=features_lst, reduction.key = 'sctUMAP_', reduction.name = 'sctumap')
+  cell_embed <- as.data.frame(x_dat@reductions$sctumap@cell.embeddings)
+  
+  save(cell_embed, file=paste0(saveFolder, "CookedEMT_",x_name,"_sctransform_cell_embed.Rdata")) 
+  
+}
+
+
+
+
+
+
+
+
+## SCRAN DATA --------------------------------------
+
+load(file=paste0(SCE_SAVE_DIR, "CookedEMT_sceList.Rdata")) ## scran
+
+
+
+
+
+
+######################################################################################################
+### 
+###  BENCHMARKING -- PBMC stimulated data                                       
+###
+
+load(file=paste(saveFolder,"scDECAF_benchmarking_objects.Rdata", sep=""))
+
+### --- HM
+PBMC_scran_HM_score_lst <- Run_Routine(PBMC_obj_scran, HM_genesets, norm_type = "scran",hvg_n = c(100000))  ## one of "scran" or "sctransform")
+
+save(PBMC_scran_HM_score_lst, file="/stornext/Home/data/allstaff/w/whitfield.h/scDECAF/data/benchmarking_results/intermediate_tmp.Rdata")
+load(file="/stornext/Home/data/allstaff/w/whitfield.h/scDECAF/data/benchmarking_results/intermediate_tmp.Rdata")
+
+PBMC_sctransform_HM_score_lst <- Run_Routine(PBMC_obj_sctransform, HM_genesets, norm_type = "sctransform",hvg_n = c(1000, 2000, 3000))
+
+save(PBMC_scran_HM_score_lst,# PBMC_sctransform_HM_score_lst, 
+     file=paste(saveFolder,"scDECAF_benchmarking_HM_scores.Rdata", sep=""))
+
+### --- C2
+PBMC_scran_C2_score_lst <- Run_Routine(PBMC_obj_scran, C2_genesets, norm_type = "scran",hvg_n = c(1000, 2000, 3000, 10000))  ## one of "scran" or "sctransform")
+PBMC_sctransform_C2_score_lst <- Run_Routine(PBMC_obj_sctransform, C2_genesets, norm_type = "sctransform")
+
+# save(PBMC_scran_score_lst, file=paste(saveFolder,"scDECAF_benchmarking_scores.Rdata", sep=""))
+# save(PBMC_scran_HM_score_lst, PBMC_sctransform_HM_score_lst, file=paste(saveFolder,"scDECAF_benchmarking_scores.Rdata", sep=""))
+save(PBMC_scran_HM_score_lst, PBMC_sctransform_HM_score_lst, 
+     PBMC_scran_C2_score_lst, PBMC_sctransform_C2_score_lst, 
+     file=paste(saveFolder,"scDECAF_benchmarking_scores.Rdata", sep=""))
+
+### --- SC
+SC_Genesets_1 <- MSigDB_SC[1:120]
+SC_Genesets_2 <- MSigDB_SC[121:257]
+
+PBMC_obj_scran$CellID <- colnames(PBMC_obj_scran)
+
+PBMC_scran_SC_score_lst_1 <- Run_Routine(PBMC_obj_scran, SC_Genesets_1, norm_type = "scran", hvg_n = c(1000,3000),genesetDirection="one")  ## one of "scran" or "sctransform")
+PBMC_scran_SC_score_lst_2 <- Run_Routine(PBMC_obj_scran, SC_Genesets_2, norm_type = "scran", hvg_n = c(1000,3000),genesetDirection="one")  ## one of "scran" or "sctransform")
+
+
+PBMC_sctransform_SC_score_lst <- Run_Routine(PBMC_obj_sctransform, SC_Genesets, norm_type = "sctransform",hvg_n = c(1000, 2000, 3000))
+
+save(PBMC_scran_HM_score_lst, PBMC_sctransform_HM_score_lst, 
+     PBMC_scran_C2_score_lst, PBMC_sctransform_C2_score_lst,
+     PBMC_scran_SC_score_lst_1,PBMC_scran_SC_score_lst_2,
+     file=paste(saveFolder,"scDECAF_benchmarking_scores.Rdata", sep=""))
+
+
+######## ---------- AUCell
+library(AUCell)
+
+# exprMat Expression matrix (genes as rows, cells as columns)
+cells_rankings <- AUCell_buildRankings(as.matrix(counts(PBMC_obj_scran)))
+
+cells_AUC <- AUCell_calcAUC(geneSets, cells_rankings, aucMaxRank=nrow(cells_rankings)*0.05)
+
+
+
+
+
+######################################################################################################
+### 
+###  ASSESSING METRICS -- PBMC stimulated data                                       
+###
+
+load(file=paste(saveFolder,"scDECAF_benchmarking_scores.Rdata", sep=""))
+
+#PBMC_obj_scran$stim == "control"
+#PBMC_obj_scran$stim == "interferon-stimulated"
+PBMC_stim_vector_control = PBMC_obj_scran$stim == "control"
+PBMC_stim_vector_stim = PBMC_obj_scran$stim == "interferon-stimulated"
+
+
+
+
+#PBMC_scran_HM_KS <- GetMetrics(PBMC_scran_HM_score_lst, genesets_of_interest, PBMC_obj_scran$stim == "control", pvalue_bool=FALSE)
+#PBMC_sctransform_HM_KS <- GetMetrics(PBMC_sctransform_HM_score_lst, genesets_of_interest, PBMC_obj_scran$stim == "control", pvalue_bool=FALSE)
+
+## or?
+
+### --- HM
+UpDown_genesets <- unlist(strsplit(names(HM_genesets)[grepl("UP", names(HM_genesets))], "_UP"))
+genesets_of_interest <- names(HM_genesets)[!(names(HM_genesets) %in% c(paste0(UpDown_genesets, "_UP"), paste0(UpDown_genesets, "_DN")))]
+PBMC_scran_HM_KS <- GetMetrics(PBMC_scran_HM_score_lst, genesets_of_interest, PBMC_stim_vector_control , pvalue_bool=FALSE)
+PBMC_sctransform_HM_KS <- GetMetrics(PBMC_sctransform_HM_score_lst, genesets_of_interest, PBMC_stim_vector_control , pvalue_bool=FALSE)
+
+### Higher test statistic means more likely to be rejected i.e lower p value (??)
+# test_x <- c("HALLMARK_TNFA_SIGNALING_VIA_NFKB", "HALLMARK_ADIPOGENESIS",  "HALLMARK_APOPTOSIS" )
+HM_KS <- merge(PBMC_scran_HM_KS, PBMC_sctransform_HM_KS, by="row.names")
+rownames(HM_KS) <- HM_KS$Row.names
+HM_KS <- HM_KS[!colnames(HM_KS) %in% c("Row.names")]
+
+HM_KS_long <- reshape2::melt(HM_KS)
+HM_KS_long$method <- unlist(lapply(as.character(HM_KS_long$variable), function(x){strsplit(x, "_")[[1]][1]}))
+
+p <- ggplot(HM_KS_long, aes(x=variable,y=value, fill=method)) + geom_violin(alpha=0.7) + theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1, size=10))
+
+## ALL
+png(paste0(figureFolder, "HM_KS.png"))
+print(p)
+dev.off()
+
+## INTERFERON
+HM_KS <- merge(PBMC_scran_HM_KS, PBMC_sctransform_HM_KS, by="row.names")
+rownames(HM_KS) <- HM_KS$Row.names
+HM_KS <- HM_KS[!colnames(HM_KS) %in% c("Row.names")]
+HM_KS <- HM_KS[rownames(HM_KS) %in% genesets_of_interest[grepl("INTERFERON", genesets_of_interest)], ]
+
+HM_KS_long <- reshape2::melt(HM_KS)
+HM_KS_long$method <- unlist(lapply(as.character(HM_KS_long$variable), function(x){strsplit(x, "_")[[1]][1]}))
+
+p <- ggplot(HM_KS_long, aes(x=variable,y=value, fill=method)) + geom_bar(stat="identity") + theme(axis.text.x=element_text(angle=45, vjust=1, hjust=1, size=10))
+png(paste0(figureFolder, "HM_INTERFERONx2_KS.png"))
+print(p)
+dev.off()
+
+
+### --- C2
+genesets_of_interest_C2 <- names(C2_genesets)[grepl("INTERFERON", names(C2_genesets))]
+genesets_of_interest_C2 <- genesets_of_interest_C2[genesets_of_interest_C2 %in% colnames(PBMC_scran_C2_score_lst[1])]
+PBMC_scran_C2_KS <- GetMetrics(PBMC_scran_C2_score_lst, genesets_of_interest_C2, PBMC_stim_vector_control , pvalue_bool=FALSE)
+PBMC_sctransform_C2_KS <- GetMetrics(PBMC_sctransform_C2_score_lst, genesets_of_interest_C2, PBMC_stim_vector_control , pvalue_bool=FALSE)
+
+HM_KS <- merge(PBMC_scran_HM_KS, PBMC_sctransform_HM_KS, by="row.names")
+rownames(HM_KS) <- HM_KS$Row.names
+HM_KS <- HM_KS[!colnames(HM_KS) %in% c("Row.names")]
+
+
+
+######################################################################################################
+### 
+###  OTHER CODE                                  
+###
+
+### To simplify, I will use the embedding associated with the normalisation strategy
+### Same with the function used to obtain HVGs
+
+output_1 <- Run_scDECAF(PBMC_obj_scran, 
+                        HM_genesets,
+                        bedbed="scater_umap", # One of: sct_umap, scater_umap
+                        hvg_type = "scran",
+                        hvg_n = 3000,
+                        standardise = TRUE)
+
+output_1 <- Run_scDECAF(PBMC_obj_sctransform, 
+                        HM_genesets,
+                        bedbed="sct_umap", # One of: sct_umap, scater_umap
+                        hvg_type = "vst",
+                        hvg_n = 3000,
+                        standardise = TRUE)
+
+
+Run_Routine <- function(dat_obj, 
+                        genesetList,
+                        norm_type = "")
+  
+save(output_HM, output_seurat_HM, file=paste(saveFolder,"output_example.Rdata", sep=""))
+load(file=paste(saveFolder,"output_example.Rdata", sep=""))
+
+PBMC_scran_HM_output <- attr(output_HM,"raw_scores")
+PBMC_sctransform_HM_output <- attr(output_seurat_HM,"raw_scores")
+
+
+

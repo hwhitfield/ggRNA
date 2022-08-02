@@ -1,0 +1,816 @@
+
+##### ----- Get directories
+
+wd="/stornext/Home/data/allstaff/w/whitfield.h/PhD_Project_MPE/MPE_paper_analysis"
+# wd=getwd()
+#setwd(wd)
+data_dir <- paste0(wd,"/data/")
+matrix_dir <- paste0(data_dir,"raw_matrices/")
+pal_etal_dir <- paste0(data_dir,"pal_etal_data/")
+fig_dir <- paste0(wd,"/figures/")
+
+source(paste0(wd,"/scripts/helper_functions.R"))
+
+
+Colour_values_subtype <- setNames(c("#CABEE9","#2F3D70","#BC8E7D"),
+                                  c("ER","TN", "TNB1"))
+
+
+Colour_values_PatientID <- c("#077187", "#6AAAB7", "#8E2043", 
+                             "#FEA090","#FECFC7", "#3E5496", "#0A9086")
+names(Colour_values_PatientID) <- c("BCB66","BCB66_E", "BCB20","BCB20_E", 
+                                    "BCB21_E", "BCB112",  "BCB139")
+
+Colour_values_AIMS <- c("#CABEE9", "#7C7189", "#FAE093", "#D04E59", "#2F3D70")
+names(Colour_values_AIMS) <- c( "LumA", "LumB", "Her2","Normal", "Basal")
+
+
+### --- Load brca data -----------------------------------------------------
+
+
+### --- Get primary brca data
+library(Seurat)
+ERTum <- readRDS(file="/stornext/Home/data/allstaff/w/whitfield.h/data/_datasets/sc/Smyth_HumanBrCa/SeuratObject_ERTotalTum.rds")
+TNBCTum <- readRDS(file="/stornext/Home/data/allstaff/w/whitfield.h/data/_datasets/sc/Smyth_HumanBrCa/SeuratObject_TNBCTum.rds")
+
+
+### --- Get pseudobulk cluster information
+ERTum@meta.data$MKI67_clust <- ifelse(as.character(ERTum@meta.data$seurat_clusters) == "1",
+                                      "MKI67_clust","other_clust")
+TNBCTum@meta.data$MKI67_clust <- ifelse(as.character(TNBCTum@meta.data$seurat_clusters) == "1",
+                                        "MKI67_clust","other_clust")
+
+ERTum@meta.data$PB_clust <- paste0(ERTum@meta.data$group,"_",ERTum@meta.data$MKI67_clust)
+TNBCTum@meta.data$PB_clust <- paste0(TNBCTum@meta.data$group,"_",TNBCTum@meta.data$MKI67_clust)
+
+PB_clust_dict <- c(setNames(ERTum@meta.data$PB_clust, rownames(ERTum@meta.data)),
+                   setNames(TNBCTum@meta.data$PB_clust, rownames(TNBCTum@meta.data)))
+
+### --- Combine primary data
+library(scMerge)
+PAL_sce <- scMerge::sce_cbind(list(
+            ER=SingleCellExperiment(assays=list(
+                counts=as.matrix(GetAssayData(
+                              object = ERTum,  slot = "counts",assay="RNA"))),
+                 colData=DataFrame(ERTum@meta.data)),
+             TN=SingleCellExperiment(assays=list(
+               counts=as.matrix(GetAssayData(
+                              object = TNBCTum, slot = "counts", assay="RNA"))),
+               colData=DataFrame(TNBCTum@meta.data))),
+                     method ="union",
+                     cut_off_batch =0,
+                     cut_off_overall =0,
+                     exprs ="counts",
+                     batch_names = c("ER", "TN"),
+                     colData_names=c("group", "seurat_clusters","nCount_RNA","nFeature_RNA"))
+
+rm(ERTum, TNBCTum)
+gc()
+
+PAL_sce$PatientID <- PAL_sce$group
+PAL_sce$Cluster <- PAL_sce$seurat_clusters
+PAL_sce$CellID <- colnames(PAL_sce)
+
+
+
+
+### --- Get MPE data
+load(file=paste0(data_dir, "Fig3_sce.Rdata"))
+Fig3_sce <- Fig3_sce[,Fig3_sce$CellType_Fig3 == "Malignant"]
+Fig3_sce <- Fig3_sce[,!(Fig3_sce$PatientID == "BCB21")]
+
+
+
+### --- Merge MPE data to select MKI67 clusters --------------------------------
+
+library(scfunc)
+malignantMPE_sce <- scfunc::SeuratIntegrate(Fig3_sce[as.vector(rowSums(counts(Fig3_sce)>0)>0), ],
+                                            split_col="Patient", n_features = 3000)
+
+malignantMPE_sce <- runTSNE(malignantMPE_sce)
+malignantMPE_sce <- runUMAP(malignantMPE_sce)
+malignantMPE_sce <- runPCA(malignantMPE_sce)
+malignantMPE_sce <- runTSNE(malignantMPE_sce,dimred="PCA",name="PCA_TSNE")
+
+g <- buildSNNGraph(malignantMPE_sce,k=50, assay.type = "logcounts")
+clust <- igraph::cluster_walktrap(g)$membership
+malignantMPE_sce$Clust_Knn50 <- as.character(as.vector(clust))
+
+#save(malignantMPE_sce, file=paste0(data_dir, "merged_malignantMPE_sce.Rdata"))
+
+
+### --- Select MPE clusters for pseudobulk
+library(RColorBrewer)
+library(pals)
+MKI67_cols <- setNames(c(stepped()[13:16],stepped2()[17:20]),
+                       c("3","5","7", "8",
+                         "1", "2", "4", "6"))
+MKI67_cols <- MKI67_cols[as.character(1:8)]
+
+clust_cols <- setNames(brewer.pal(n = 8, name = "Dark2"),
+                       as.character(1:8))
+A <- ggDIMRED(malignantMPE_sce , dimred="PCA_TSNE",colour_by = "MKI67",point_size =4,npc_units=0.05)+
+                theme(legend.key.height=unit(0.17, units="npc"),
+                      legend.key.width=unit(0.03, units="npc"),
+                      axis.ticks = element_blank(), panel.border=element_blank(),
+                      axis.title = element_blank(), axis.text=element_blank(), 
+                      axis.line = element_blank(),legend.title=element_blank(),
+                      legend.position="left", legend.text = element_text(size=18)) 
+B <- ggDIMRED(malignantMPE_sce , dimred="PCA_TSNE",colour_by = "Clust_Knn50",
+              col_pal = MKI67_cols,point_size =4)+theme_blank()
+
+plot_dat <- as.data.frame(colData(malignantMPE_sce)[colnames(colData(malignantMPE_sce)) %in% c("Clust_Knn50", "CellID")])
+plot_dat$MKI67 <- as.vector(logcounts(malignantMPE_sce[rownames(malignantMPE_sce)=="MKI67",]))
+plot_dat$Clust_Knn50 <- as.character(plot_dat$Clust_Knn50)
+C <- ggplot(data=plot_dat, aes(x=Clust_Knn50, y= MKI67, fill=Clust_Knn50))+
+  geom_boxplot(lwd=0.2) + scale_fill_manual(values=MKI67_cols)+ labs(y="MKI67 Expression") +
+  guides(fill = guide_legend(ncol=2,title="Cluster")) +
+  theme_bw() + 
+  theme(axis.ticks.x=element_blank(), axis.text.x=element_blank(),
+        axis.title.x=element_blank(), 
+        axis.title.y=element_text(size=18),axis.text.y=element_text(size=16),
+        legend.position = "none")+scale_y_continuous(expand=c(0,0))
+
+gg_leg <- GetLegend(MKI67_cols, "KNN Cluster", n_row=1,leg_size =6)
+
+pdf(paste0(fig_dir,"Malignant_MKI67clust_boxes.pdf"),width=7,height=3)
+cowplot::plot_grid(C,gg_leg, ncol=1, rel_heights = c(1,0.3))
+dev.off()
+
+reso <- 350
+length <- 3.25*reso/72
+png(paste0(fig_dir,"SUPP_MalignantTSNE_MKI67.png"), units="in", width=length, height=length*0.9, res=reso)
+A
+dev.off()
+
+pdf(paste0(fig_dir,"SUPP_MalignantTSNE_MKI67.pdf"), width=7, height=6)
+A
+dev.off()
+
+
+png(paste0(fig_dir,"SUPP_MalignantTSNE_Clust.png"), units="in", width=length, height=length*0.9, res=reso)
+B
+dev.off()
+
+
+
+
+##### ----- SUPPLEMENTARY FIGURE 10 
+### Cluster/AIMs prop bar
+props <- GetProps_perPatient(malignantMPE_sce[,!is.na(malignantMPE_sce$AIMS_subtype)],
+                             "AIMS_subtype", "MKI67_clust")
+props$label <- rownames(props)
+#props <- props[order(factor(props$label, levels=rev(unique(label_ordering)))),]
+props <- reshape2::melt(props, id.vars="label", value.name="Proportion", variable.name="group")
+
+## Get cell number
+SampleNumbs_dict <- unlist(lapply(unique(props$group), function(x)  {ncol(malignantMPE_sce[,malignantMPE_sce$MKI67_clust == x])}))
+names(SampleNumbs_dict) <- unique(props$group)
+props$CellNumb <- as.vector(SampleNumbs_dict[as.vector(props$group)])
+cellNumb <- props[!(duplicated(props$group)),colnames(props) %in% c("group", "CellNumb")]
+cellNumb$CellNumb <- as.numeric(cellNumb$CellNumb)
+
+# SET BREAKS
+n_ticks = ceiling(max(cellNumb$CellNumb)/5000)
+gap=5000
+break_vec <- seq(0, gap*n_ticks, gap)
+break_labs <- gsub("0{3}$","k",break_vec)
+
+bar_theme <- theme(legend.text = element_text(size = rel(rl)*1.3),
+                   legend.text.align = 0.5,legend.title.align = 0.5,
+                   legend.spacing.y = unit(0.2, 'cm'),
+                   legend.spacing.x = unit(0.1, 'cm'),
+                   legend.margin=margin(0,0,0,0),
+                   legend.box.margin=margin(-5,-5,-5,-5),
+                   legend.box.spacing= unit(0.1, 'cm'),
+                   legend.title = element_text(size = rel(rl)*1.6),
+                   legend.position = 'none',
+                   panel.border = element_rect(colour = NA),
+                   panel.grid.minor = element_blank(),
+                   panel.grid.major = element_blank(),
+                   axis.line.x = element_blank(),axis.line.y = element_blank(),
+                   axis.ticks.x=element_blank(), axis.ticks.y=element_blank(),
+                   axis.title.x =element_blank(),  axis.title.y=element_blank())
+
+## Get prop bar
+PropBar_pp <- ggplot(props, aes(x=group, y=Proportion, fill=label)) +
+  geom_bar(stat = "identity", position = "stack", width=0.95) +
+  xlab(paste0("\n", "MKI67 Cluster")) +ylab("\nLabel Proportion") +
+  scale_fill_manual(values=Colour_values_AIMS)+theme_bw()+ # coord_flip()+
+  labs(fill = "Subtype")+bar_theme+
+  scale_x_discrete(labels=c("Proliferative \n Clusters", "Non-proliferative \n Clusters"))+
+  theme(axis.text.x = element_text(size=8, margin = margin(-5,0,0,0)))
+
+patient_tsne <- cowplot::plot_grid(ggDIMRED(malignantMPE_sce , dimred="PCA_TSNE",colour_by = "PatientID",
+                                            col_pal = Colour_values_PatientID,point_size =0.8)+theme_blank(),
+                                   GetLegend(Colour_values_PatientID, "PatientID",n_row=2,leg_size =1,rl=0.6),
+                                   ncol=1, rel_heights = c(7,1))
+MKI67_tsne <- cowplot::plot_grid(ggDIMRED(malignantMPE_sce , dimred="PCA_TSNE",colour_by = "Clust_Knn50",
+                                          col_pal = MKI67_cols,point_size =0.8)+theme_blank(),
+                                 cowplot::plot_grid(GetLegend(MKI67_cols[c("1", "2", "4", "6")], "Non-proliferative KNN Clusters",
+                                                              n_row=1,leg_size =1,rl=0.6),
+                                                    GetLegend(MKI67_cols[c("3", "5", "7", "8")], "Proliferative KNN Clusters",
+                                                              n_row=1,leg_size =1,rl=0.6),
+                                                    nrow=1), ncol=1, rel_heights = c(7,1))
+AIMS_tsne <- cowplot::plot_grid(ggDIMRED(malignantMPE_sce, dimred="PCA_TSNE",colour_by = "AIMS_subtype", 
+                            col_pal = Colour_values_AIMS,point_size =0.85)+theme_blank(),
+                            GetLegend(Colour_values_AIMS, "Subtype",n_row=1,leg_size =1,rl=0.7), 
+                             ncol=1, rel_heights = c(7,1))
+
+pdf(paste0(fig_dir,"SUPPFIG10_MKI67clusts.pdf"),width=7,height=8)
+cowplot::plot_grid(cowplot::plot_grid(MKI67_tsne+theme(plot.margin=unit(c(0.5,0,0.5,0), "cm")), 
+                                      patient_tsne+theme(plot.margin=unit(c(0.5,0,0.5,0), "cm")), 
+                                      nrow=1, labels=c("A","B"), label_fontface = "plain"),
+                   cowplot::plot_grid(AIMS_tsne, 
+                                      PropBar_pp+theme(plot.margin=unit(c(0.5,0,0,0), "cm"),axis.text.y=element_blank()),
+                                      nrow=1,labels=c("C","D"), label_fontface = "plain", rel_widths = c(2,1)),
+                   nrow=2, rel_heights = c(1,1))
+dev.off()
+
+
+
+malignantMPE_sce$MKI67_clust <- ifelse(malignantMPE_sce$Clust_Knn50 %in% c("3","5","7","8"), 
+                                       "MKI67_clust","other_clust")
+malignantMPE_sce$PB_clust <- paste0(malignantMPE_sce$PatientID, "_",malignantMPE_sce$MKI67_clust)
+PB_clust_dict <- c(PB_clust_dict, 
+                   setNames(malignantMPE_sce$PB_clust, malignantMPE_sce$CellID))
+
+
+
+
+
+### --- Merge MPE and primary data -----------------------------------------------------
+
+load(file=paste0(data_dir, "Fig3_sce.Rdata"))
+Fig3_sce$Patient <- Fig3_sce$PatientID
+Fig3_sce$Patient <- gsub("_E","",Fig3_sce$Patient)
+
+BrCa_sce <- scMerge::sce_cbind(list(MPE=Fig3_sce,
+                        Primary=PAL_sce),
+                   method ="union",
+                   cut_off_batch =0,
+                   cut_off_overall =0,
+                   exprs ="counts",
+                   batch_names = c("MPE", "Primary"),
+                   colData_names=c("PatientID", "CellID","Cluster"))
+
+counts(BrCa_sce) <- as(counts(BrCa_sce), "dgCMatrix")
+
+### --- Add column data
+BrCa_sce$Subtype <- ifelse(grepl("ER|139|BCB20|BCB21",BrCa_sce$PatientID), "ER", "TN")
+BrCa_sce$Subtype <- replace(BrCa_sce$Subtype,
+                            grepl("BCB66|TN_B1",BrCa_sce$PatientID),
+                            "TNB1")
+BrCa_sce$PB_clust <- as.vector(PB_clust_dict[BrCa_sce$CellID])
+
+save(BrCa_sce, file=paste0(data_dir, "BrCa_sce.Rdata"))
+
+rm(Fig3_sce, PAL_sce)
+gc()
+
+
+
+
+### --- Pseudobulk -----------------------------------------------------
+# load(file=paste0(data_dir, "BrCa_sce.Rdata"))
+
+
+
+Summed_Sce <- aggregateAcrossCells(BrCa_sce, #[!(grepl("^MT-",rownames(BrCa_sce))),] 
+                                   id=BrCa_sce$PB_clust)
+BrCa_dge <- DGEList(counts(Summed_Sce),
+                    group=Summed_Sce$batch,
+                    samples=as.data.frame(colData(Summed_Sce)))
+
+BrCa_dge$samples$Dataset <- BrCa_dge$samples$batch
+BrCa_dge$samples$MKI67_clust <- ifelse(grepl("MKI67_clust",BrCa_dge$samples$PB_clust), 
+                                       "MKI67_clust", "other_clust")
+
+## Discard samples with small library sizes
+BrCa_dge <- BrCa_dge[,BrCa_dge$samples$lib.size > 1e+5]
+
+## Remove genes that are lowly expressed 
+keep = rowMeans(edgeR::cpm(y=BrCa_dge, log = TRUE) >= 0.5) >= 0.1
+BrCa_dge <- BrCa_dge[keep, ]
+
+## Normalise by library size
+BrCa_dge <- calcNormFactors(BrCa_dge)  
+
+BrCa_dge$logCPM <- edgeR::cpm(BrCa_dge, log=TRUE, prior.count = 1) 
+
+
+
+### --- Plot PCA
+library(ggRNA)
+A <- ggPCA(BrCa_dge$logCPM, BrCa_dge$samples,
+           "Subtype", 
+           col_pal=Colour_values_subtype,
+           shape_str = "Dataset")
+B <- ggPCA(BrCa_dge$logCPM, BrCa_dge$samples,
+           "Subtype", 
+           col_pal=Colour_values_subtype,
+           shape_str = "MKI67_clust")
+
+## Variation not caused by library size
+BrCa_dge$samples$lib <- ifelse(BrCa_dge$samples$lib.size < summary(BrCa_dge$samples$lib.size )[["1st Qu."]],
+                               "Q1","Q2")
+BrCa_dge$samples$lib <- replace(BrCa_dge$samples$lib,
+                                BrCa_dge$samples$lib.size > summary(BrCa_dge$samples$lib.size )[["Median"]],
+                                "Q3")
+BrCa_dge$samples$lib <- replace(BrCa_dge$samples$lib,
+                                BrCa_dge$samples$lib.size > summary(BrCa_dge$samples$lib.size )[["3rd Qu."]],
+                                "Q4")
+ggPCA(BrCa_dge$logCPM, BrCa_dge$samples,
+      "lib", shape_str = "Dataset")
+
+
+### Correct batches
+#patient_factor <- factor(BrCa_dge$samples$PatientID)
+subtype_factor <- factor(BrCa_dge$samples$Subtype)
+MKI67_factor <- factor(BrCa_dge$samples$MKI67_clust)
+dataset_factor <- factor(BrCa_dge$samples$Dataset)
+design_to_preserve <- model.matrix(~subtype_factor + subtype_factor:MKI67_factor,data=BrCa_dge)
+
+BrCa_dge$batch_corrected <- limma::removeBatchEffect(cpm(BrCa_dge, log=TRUE, prior.count = 2),
+                                                  design = design_to_preserve,
+                                                  batch=dataset_factor)
+ggPCA(BrCa_dge$batch_corrected, BrCa_dge$samples,
+      "Subtype", 
+      col_pal=Colour_values_subtype,
+      shape_str = "Dataset")
+
+## Slightly along PC2
+ggPCA(BrCa_dge$batch_corrected, BrCa_dge$samples,
+      "MKI67_clust",k=4)
+
+
+
+
+
+
+### --- Pseudo-bulk within MPE data -----------------------------------------------------
+
+BuildDGE <- function(sce_x, group_str="Subtype",
+                     libsize_filt = 1e+6, cpm_filt=0.1){
+  summed_x <- aggregateAcrossCells(sce_x, id=sce_x$PB_clust)
+  
+  dge_x <- DGEList(counts(summed_x),
+                     group=summed_x[[group_str]],
+                     samples=as.data.frame(colData(summed_x)))
+  
+  dge_x$samples$MKI67_clust <- ifelse(grepl("MKI67_clust",dge_x$samples$PB_clust), 
+                                        "MKI67_clust", "other_clust")
+  
+  ## Discard samples with small library sizes
+  print("Retained samples:")
+  print(table(dge_x$samples$lib.size > libsize_filt))
+  dge_x <- dge_x[,dge_x$samples$lib.size > libsize_filt]
+  
+  ## Filter genes
+  keep = rowMeans(edgeR::cpm(y=dge_x, log = TRUE) >= cpm_filt) >= 0.1
+  dge_x <- dge_x[keep, ]
+  print("Retained genes:")
+  print(table(keep))
+  
+  ## Normalise by library size
+  dge_x <- calcNormFactors(dge_x)  
+  dge_x$logCPM <- edgeR::cpm(dge_x, log=TRUE, prior.count = 1) 
+  #ggRLE(MPE_dge$logCPM, MPE_dge$samples, "MKI67_clust",isLog = TRUE)
+  return(dge_x)
+}
+
+plot3PCA <- function(dge_x){
+  require(ggRNA)
+  patient_cols <- Colour_values_PatientID[names(Colour_values_PatientID) %in% dge_x$samples$PatientID]
+  A <- MDS2gg(dge_x, "PatientID",col_pal=patient_cols,shape_str = "MKI67_clust")
+  B <- ggPCA(dge_x$logCPM, dge_x$samples,
+             "PatientID",  col_pal=patient_cols,shape_str = "MKI67_clust")
+  C <- ggPCA(dge_x$batch_corrected, dge_x$samples,
+             "PatientID",  col_pal=patient_cols, shape_str = "MKI67_clust")
+  
+  plot_leg <- cowplot::get_legend(A+theme(legend.direction = "horizontal",
+                                          legend.box="horizontal")+
+                                    guides(colour=guide_legend(nrow=1),
+                                           shape=guide_legend(nrow=1)))
+  plot_lst <- list(A+theme(legend.position="none"),
+                   B+theme(legend.position="none"),
+                   C+theme(legend.position="none"))
+  return(cowplot::plot_grid(cowplot::plot_grid(
+    plotlist =plot_lst, nrow=1, 
+    labels = c("MDS", "PCA", "PCA - corrected"),
+    label_fontface = "plain"),
+    plot_leg, ncol=1, rel_heights = c(6,1)))
+  
+}
+
+library(ggRNA)
+MPE_sce <- BrCa_sce[,BrCa_sce$batch=="MPE"]
+
+
+##### ----- TN patients
+TN_dge <- BuildDGE(MPE_sce[,!(MPE_sce$Subtype =="ER")], group_str="Subtype",
+                    libsize_filt = 1e+6, cpm_filt=0.1)
+
+### Design matrix
+patient_factor <- factor(TN_dge$samples$PatientID)
+MKI67_factor <- factor(TN_dge$samples$MKI67_clust, levels=c("other_clust", "MKI67_clust"))
+design_mat_TN <- model.matrix(~0 + patient_factor + MKI67_factor)
+
+TN_dge <- estimateDisp(TN_dge, design_mat_TN, robust = TRUE)
+
+### Correct for patient
+design_to_preserve <- model.matrix(~0 + MKI67_factor)
+TN_dge$batch_corrected <- limma::removeBatchEffect(cpm(TN_dge, log=TRUE, prior.count = 1),
+                                                    design = design_to_preserve,
+                                                    batch=patient_factor)
+
+plot3PCA(TN_dge)
+
+
+##### ----- Luminal patients
+ER_dge <- BuildDGE(MPE_sce[,MPE_sce$Subtype =="ER"], group_str="Subtype",
+                   libsize_filt = 1e+5, cpm_filt=0.1)
+
+### Design matrix
+patient_factor <- factor(ER_dge$samples$PatientID)
+MKI67_factor <- factor(ER_dge$samples$MKI67_clust, levels=c("other_clust", "MKI67_clust"))
+design_mat_ER <- model.matrix(~0 + patient_factor + MKI67_factor)
+
+ER_dge <- estimateDisp(ER_dge, design_mat_ER, robust = TRUE)
+
+### Correct for patient
+design_to_preserve <- model.matrix(~0 + MKI67_factor)
+ER_dge$batch_corrected <- limma::removeBatchEffect(cpm(ER_dge, log=TRUE, prior.count = 1),
+                                                   design = design_to_preserve,
+                                                   batch=patient_factor)
+
+plot3PCA(ER_dge)
+
+
+
+
+##### ----- Perform Differential expression
+
+qfit_TN <- glmQLFit(TN_dge, design_mat_TN)
+qfit_ER <- glmQLFit(ER_dge, design_mat_ER)
+
+
+## Test DE 
+TN_de_obj <- glmQLFTest(qfit_TN, coef=4) 
+summary(decideTestsDGE(TN_de_obj, adjust.method="BH"))
+
+ER_de_obj <- glmQLFTest(qfit_ER, coef=5) 
+summary(decideTestsDGE(ER_de_obj, adjust.method="BH"))
+
+
+
+##### ----- Gene set enrichment
+
+## -- Get gene ids
+library(biomaRt)
+ensembl <- useEnsembl(biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl", host="https://oct2018.archive.ensembl.org")
+annot <- biomaRt::getBM(attributes=c('ensembl_gene_id','version', 'external_gene_name',  'gene_biotype','entrezgene', 'hgnc_symbol'),
+                        mart = ensembl)
+annot <- annot[!(annot$hgnc_symbol==""),]
+
+idx <- match(rownames(TN_de_obj), annot$hgnc_symbol)
+TN_de_obj <- TN_de_obj[which(!is.na(idx)),]
+idx <- idx[!is.na(idx)] 
+TN_de_obj$genes <- annot[idx,] 
+
+idx <- match(rownames(ER_de_obj), annot$hgnc_symbol)
+ER_de_obj <- ER_de_obj[which(!is.na(idx)),]
+idx <- idx[!is.na(idx)] 
+ER_de_obj$genes <- annot[idx,] 
+
+
+printTop <- function(top_obj){
+  print("UP:")
+  print(top_obj[top_obj$P.Up < 0.05,colnames(top_obj) %in% c("Pathway", "Term", "Ont", "N", "Up")])
+  print("DOWN:")
+  print(top_obj[top_obj$P.Down < 0.05,colnames(top_obj) %in% c("Pathway", "Term", "Ont", "N", "Down")])
+}
+
+
+## -- KEGG
+KEGGEnrich_TN <- kegga(TN_de_obj, species="Hs", 
+                    geneid=TN_de_obj$genes$entrezgene, FDR=0.05)
+KEGGEnrich_ER <- kegga(ER_de_obj, species="Hs", 
+                    geneid=ER_de_obj$genes$entrezgene, FDR=0.05)
+
+printTop(topKEGG(KEGGEnrich_TN, number=100))
+printTop(topKEGG(KEGGEnrich_ER, number=100))
+
+
+##### ----- Check overlap with primary
+
+PAL_TN_KEGG_pathways <- c("DNA replication","Spliceosome","Base excision repair",
+                          "Nucleotide excision repair","Mismatch repair","Cellular senescence",
+                          "Cell cycle","Homologous recombination","Fanconi anemia pathway",
+                          "RNA transport")
+
+PAL_ER_KEGG_pathways <- c("Cell cycle", "DNA replication",
+                          "Mismatch repair", "Homologous recombination",
+                          "Oxidative phosphorylation",
+                          "Cellular senescence", "Metabolic pathways",
+                          "Nucleotide excision repair",
+                          "Progesterone-mediated oocyte maturation",
+                          "Base excision repair")
+
+topTN <- topKEGG(KEGGEnrich_TN, number=20)
+TN_KEGG_pathways <- topTN[topTN$P.Up < 0.05,]$Pathway
+
+topER <- topKEGG(KEGGEnrich_ER, number=20)
+ER_KEGG_pathways <- topER[topER$P.Up < 0.05,]$Pathway
+
+## Notably the only one missing is Oxidative phosphorylation & Metabolic pathways & "RNA transport"
+## 10/13 KEGG pathways discussed in paper
+
+
+TN_pathways <- topTN[topTN$Pathway %in% unique(c(PAL_TN_KEGG_pathways, PAL_ER_KEGG_pathways)),]
+ER_pathways <- topER[topER$Pathway %in% unique(c(PAL_TN_KEGG_pathways, PAL_ER_KEGG_pathways)),]
+
+TN_pathways$Subtype <- rep('TN',nrow(TN_pathways))
+ER_pathways$Subtype <- rep('ER',nrow(ER_pathways))
+
+plot_dat <- rbind(TN_pathways, ER_pathways)
+plot_dat <- plot_dat[rev(order(plot_dat$P.Up)),]
+
+plot_dat <- data.frame(P=-log10(plot_dat$P.Up),
+                    Pathway=plot_dat$Pathway,
+                    Subtype=plot_dat$Subtype)
+
+setdiff(TN_pathways$Pathway,ER_pathways$Pathway)
+plot_dat[nrow(plot_dat)+1,] = c(0, "Spliceosome", "ER")
+plot_dat$P <- as.numeric(plot_dat$P)
+
+plot_dat$Pathway <- factor(plot_dat$Pathway, levels=unique(plot_dat$Pathway))
+plot_dat <- plot_dat[order(plot_dat$Pathway),]
+
+
+plot_dat$PAL <-  ifelse((plot_dat$Pathway %in% PAL_TN_KEGG_pathways) &
+                          plot_dat$Pathway %in% PAL_ER_KEGG_pathways, "Both", NA)
+plot_dat$PAL  <-  replace(plot_dat$PAL,
+                          (plot_dat$Pathway %in% PAL_ER_KEGG_pathways) &
+                            is.na(plot_dat$PAL),"ER")
+plot_dat$PAL  <-  replace(plot_dat$PAL,
+                          (plot_dat$Pathway %in% PAL_TN_KEGG_pathways) &
+                            is.na(plot_dat$PAL),"TN")
+KEGG_cols <- setNames(c("#2F3D70","#CABEE9","#8AAAD0"),
+                      c("TN","ER","Both"))
+
+A <- ggplot(data=plot_dat[plot_dat$Subtype=="ER",], aes(x=P, y=Pathway, fill=PAL))+
+  geom_bar(stat="identity")+theme_bw() + 
+  theme(axis.ticks.y=element_blank(), axis.text.y=element_blank(),
+        legend.position = "none",plot.margin=margin(0,5,0,0))+
+  labs(x="-Log10(P-value)", y="")+scale_x_reverse(expand=c(0,0)) + 
+  scale_fill_manual(values=KEGG_cols)
+
+B <- ggplot(data=plot_dat[plot_dat$Subtype=="TN",], aes(x=P, y=Pathway, fill=PAL))+
+  geom_bar(stat="identity")+theme_bw() + scale_x_continuous(expand=c(0,0))+
+  theme(axis.ticks.y=element_blank(), axis.text.y=element_text(size=13,hjust=0.5),
+        legend.position = "none", plot.margin=margin(0,0,0,0))+
+  labs(x="-Log10(P-value)", y="") + scale_fill_manual(values=KEGG_cols)
+
+
+
+gg_leg <- GetLegend(KEGG_cols, "Enriched in Primary", n_row = 3)
+
+pdf(paste0(fig_dir,"FIG3_KEGG.pdf"),width=13,height=3)
+cowplot::plot_grid(cowplot::plot_grid(A,B,rel_widths =c(1,1.8)),
+                   gg_leg,nrow=1,rel_widths = c(6,1))
+dev.off()
+
+
+
+
+
+pdf(paste0(fig_dir,"MKI67_clustNumbs.pdf"),width=8,height=3)
+ggplot(dat) + aes(Patient, pct, fill=MKI67_clust) + 
+  geom_bar(stat="identity") + facet_grid(~Group, scales = "free_x", space="free")+
+  theme_bw()+ scale_fill_manual(values=(c("#7C7189","#CABEE9")))+
+  scale_y_continuous(expand=c(0,0))+
+  theme(axis.ticks.y=element_blank(),axis.text.y=element_text(size=10),
+        axis.title.x=element_text(size=14,margin = unit(c(5, 0, 0, 0), "mm")))+
+  labs(y="MKI67+ Cells",x="")
+
+##### ------ PAM50 heatmap --------------------------
+
+load(file=paste0(data_dir, "merged_malignantMPE_sce.Rdata"))
+ERTum <- readRDS(file="/stornext/Home/data/allstaff/w/whitfield.h/data/_datasets/sc/Smyth_HumanBrCa/SeuratObject_ERTotalTum.rds")
+TNBCTum <- readRDS(file="/stornext/Home/data/allstaff/w/whitfield.h/data/_datasets/sc/Smyth_HumanBrCa/SeuratObject_TNBCTum.rds")
+
+Cluster_dict <- setNames(malignantMPE_sce$Clust_Knn50, malignantMPE_sce$CellID)
+Cluster_dict <- c(Cluster_dict,
+                  setNames(as.vector(ERTum@meta.data$seurat_clusters), 
+                           rownames(ERTum@meta.data)))
+Cluster_dict <- c(Cluster_dict,
+                  setNames(as.vector(TNBCTum@meta.data$seurat_clusters), 
+                           rownames(TNBCTum@meta.data)))
+
+BrCa_sce$Cluster <- as.vector(Cluster_dict[BrCa_sce$CellID])
+BrCa_sce$PB_clust <- paste0(BrCa_sce$PatientID ,"_",BrCa_sce$Cluster)
+pb_clust_keep <- names(table(BrCa_sce$PB_clust)[table(BrCa_sce$PB_clust)>100])
+
+BrCa_dge <- BuildDGE(BrCa_sce[,BrCa_sce$PB_clust %in% pb_clust_keep], group_str="Subtype",
+                   libsize_filt = 1e+5, cpm_filt=0.1)
+
+rm(malignantMPE_sce,TNBCTum,ERTum)
+gc()
+
+ggRLE(BrCa_dge$logCPM, BrCa_dge$samples, "Subtype", isLog=TRUE)
+ggRLE(BrCa_dge$batch_corrected, BrCa_dge$samples, "Subtype", isLog=TRUE)
+
+
+### Correct for patient
+dataset_factor <- factor(BrCa_dge$samples$batch)
+subtype_factor <- factor(BrCa_dge$samples$Subtype)
+design_to_preserve <- model.matrix(~0 + subtype_factor)
+BrCa_dge$batch_corrected <- limma::removeBatchEffect(cpm(BrCa_dge, log=TRUE, prior.count = 1),
+                                                   design = design_to_preserve,
+                                                   batch=dataset_factor)
+
+# red - "#D04E59"
+# yellow - "#FAE093"
+Colour_values_AIMS <- setNames(c("#CABEE9", "#2F3D70", "#51806a",
+                                 "#CABEE9", "#CABEE9", "grey", "grey", "#2F3D70"),
+                               c( "ER", "TN", "TNB1",
+                                  "LumA", "LumB", "Her2","Normal", "Basal"))
+
+PAM50 <- read.delim(paste0(data_dir,"PAM50.txt"), header=TRUE, stringsAsFactors=FALSE)
+keep <- PAM50$Gene %in% rownames(BrCa_dge)
+PAM50 <- PAM50[keep, ]
+
+
+### --- PAM50 heatmap
+#annot1 <- data.frame(PAM50=PAM50$Subtype)
+#rownames(annot1) <- PAM50$Gene
+annot2 <- data.frame(Dataset=as.factor(BrCa_dge$samples$batch), 
+                     Subtype=as.factor(BrCa_dge$samples$Subtype))
+rownames(annot2) <- colnames(BrCa_dge)
+ann_colors2 <- list(Dataset=c("#A7473A", "#4B5F6C"), 
+                    Subtype=as.vector(Colour_values_AIMS[unique(BrCa_dge$samples$Subtype)]))
+# PAM50=as.vector(Colour_values_AIMS[unique(PAM50$Subtype)]))
+names(ann_colors2$Dataset) <- unique(BrCa_dge$samples$batch)
+names(ann_colors2$Subtype) <- unique(BrCa_dge$samples$Subtype)
+#names(ann_colors2$PAM50) <- unique(PAM50$Subtype)
+
+pdf(paste0(fig_dir,"FIG3_PAM50_HEATMAP.pdf"), height=8, width=7)
+pheatmap::pheatmap(BrCa_dge$logCPM[PAM50$Gene, ], 
+         color=mako(100), border_color="NA",
+         breaks=seq(-2,2,length.out=101), cluster_cols=TRUE, scale="row", fontsize_row=7, 
+         show_colnames=FALSE, treeheight_row=70, treeheight_col=70, cutree_cols=1,
+         clustering_method="ward.D2", 
+         #     annotation_row =annot1,
+         annotation_col=annot2, annotation_colors=ann_colors2)
+dev.off()
+
+
+
+
+
+
+
+
+##### ----- Number of MKI67 cells
+
+BrCa_sce$MKI67_clust <- ifelse(grepl("MKI67_clust",BrCa_sce$PB_clust), 
+                                       "MKI67_clust", "other_clust")
+plot_dat <- data.frame(MKI67=as.vector(counts(BrCa_sce[rownames(BrCa_sce)=="MKI67",])>0),
+                       MKI67_clust=as.vector(BrCa_sce$MKI67_clust),
+                       Patient=BrCa_sce$PatientID,
+                       Group = paste0(BrCa_sce$batch, "_",gsub("B1","",BrCa_sce$Subtype)))
+library(dplyr)
+dat <- plot_dat %>% 
+  count(Patient, Group, MKI67_clust) %>%
+  group_by(Patient) %>%
+  mutate(pct= prop.table(n) * 100)
+pdf(paste0(fig_dir,"MKI67_clustNumbs.pdf"),width=8,height=3)
+ggplot(dat) + aes(Patient, pct, fill=MKI67_clust) + 
+  geom_bar(stat="identity") + facet_grid(~Group, scales = "free_x", space="free")+
+  theme_bw()+ scale_fill_manual(values=(c("#7C7189","#CABEE9")))+
+  scale_y_continuous(expand=c(0,0))+
+  theme(axis.ticks.y=element_blank(),axis.text.y=element_text(size=10),
+        axis.title.x=element_text(size=14,margin = unit(c(5, 0, 0, 0), "mm")))+
+  labs(y="MKI67+ Cells",x="")
+dev.off()
+
+
+
+
+
+
+
+
+### --- Pseudo-bulk within Primary data -----------------------------------------------------
+
+
+
+
+### --- Differental expression -------------------------------------------------
+
+design <- model.matrix(~Treat + Treat:Time, data=targets)
+
+### --- Design matrix
+data_factor <- factor(BrCa_dge$samples$Dataset)
+subtype_factor <- factor(BrCa_dge$samples$Subtype)
+design_mat <- model.matrix(~data_factor + data_factor:subtype_factor, data=BrCa_dge)
+
+### --- Differential expression
+BrCa_dge <- estimateDisp(BrCa_dge, design_mat, robust = TRUE)
+qfit <- glmQLFit(BrCa_dge, design_mat)
+
+# Test DE 
+BrCa_de_obj <- glmQLFTest(qfit, coef=2)   
+summary(decideTestsDGE(BrCa_de_obj, adjust.method="BH"))
+
+rownames(topTags(BrCa_de_obj, n=50, p.value=0.05, adjust.method = "BH", sort.by = "PValue"))
+
+
+### --- Gene set enrichment
+GOEnrich <- goana(BrCa_de_obj, species="Hs", 
+                  geneid=BrCa_de_obj$genes$entrezgene, FDR=0.05)
+KEGGEnrich <- kegga(BrCa_de_obj, species="Hs", 
+                    geneid=BrCa_de_obj$genes$entrezgene, FDR=0.05)
+
+topkegg <- topKEGG(KEGGEnrich, number=100)
+topkegg[topkegg$P.Up < 0.05,colnames(topkegg) %in% c("Pathway", "N", "Up")]
+topkegg[topkegg$P.Down < 0.05,colnames(topkegg) %in% c("Pathway", "N", "Down")]
+
+topgo <- topGO(GOEnrich, number=100, ontology=c("BP","MF", "CC"))
+topgo <- topGO(GOEnrich, number=100, ontology=c("MF"))
+topgo[topgo$P.Up < 0.05,colnames(topgo) %in% c("Term", "Ont", "N", "Up")]
+topgo[topgo$P.Down < 0.05,colnames(topgo) %in% c("Term","Ont", "N", "Down")]
+
+## i.e. adaptations of cellular metabolism to support growth and survival.
+# MPE: cytokine receptor activity
+
+library(GSEABase)
+C2_gs <- getGmt("/stornext/Home/data/allstaff/w/whitfield.h/data_load/genesets/c2.all.v7.1.symbols.gmt")
+HM_gs <- getGmt("/stornext/Home/data/allstaff/w/whitfield.h/data_load/genesets/HM_gs.gmt")
+
+C2_gs_lst <- lapply(names(C2_gs),function(gs){geneIds(C2_gs[[gs]])})
+names(C2_gs_lst) <- names(C2_gs)
+
+HM_gs_lst <- lapply(names(HM_gs),function(gs){geneIds(HM_gs[[gs]])})
+names(HM_gs_lst) <- names(HM_gs)
+
+idx_cam <- ids2indices(C2_gs_lst,id=BrCa_dge$genes$hgnc_symbol)
+cam <- camera(BrCa_dge$counts, index=idx_cam, 
+              design=BrCa_dge$design, contrast=2)
+
+idx_cam <- ids2indices(HM_gs_lst,id=BrCa_dge$genes$hgnc_symbol)
+cam_HM <- camera(BrCa_dge$counts, index=idx_cam, 
+              design=BrCa_dge$design, contrast=2)
+cam_HM[cam_HM$PValue < 0.05,]
+
+### --- Singscore scores:
+## MPE
+# - NIKOLSKY_BREAST_CANCER_8Q23_Q24_AMPLICON, IKOLSKY_BREAST_CANCER_17Q21_Q25_AMPLICON , BALLIF_DEVELOPMENTAL_DISABILITY_P16_P12_DELETION 
+# - CREIGHTON_AKT1_SIGNALING_VIA_MTOR_UP  
+
+## Primary:
+# - CROONQUIST_STROMAL_STIMULATION_UP, NABA_COLLAGENS 
+# - REACTOME_ECM_PROTEOGLYCANS 
+# - NAGASHIMA_EGF_SIGNALING_UP 
+# - FRASOR_RESPONSE_TO_ESTRADIOL_UP 
+# - VANTVEER_BREAST_CANCER_ESR1_UP
+
+## MPE:
+# - extracellular matrix structural constituent (GO:0005201) -- collagens COL4A1/2, POSTN,LUM,FBLN2,COL5A3
+# - Oxidative phosphorylation (path:hsa00190)
+# - aerobic respiration (GO:0009060)
+# - cellular respiration (GO:0045333 )
+# - WASH complex (GO:0071203) - WASP family, TRAMP complex (GO:0031499)
+## WASP role in regulating leukocyte-dependent breast cancer metastasis....
+#https://link.springer.com/article/10.1007/s11033-022-07650-4
+# https://www.cancertherapyadvisor.com/home/cancer-topics/breast-cancer/role-of-the-wasp-and-wave-family-proteins-in-breast-cancer-invasion-and-metastasis/
+
+## Primary:
+# - Homologous recombination (path:hsa03440)
+# - regulation of DNA recombination (GO:0000018)
+# - cell-cell recognition  (GO:0009988)
+# - establishment of endothelial intestinal barrier  (GO:0090557) --PTPRS,AFDN,TJP2
+
+
+### --- GET GO TERMS
+go_terms <- c("GO:0005201","GO:0045333", "GO:0009060", "GO:0071203", "GO:0000018","GO:0009988", "GO:0090557")
+go_mart <- getBM(attributes= c("hgnc_symbol",'go_id'),
+                 filters=c("hgnc_symbol", "go"),
+                 values=list(hgnc_symbol=rownames(topTags(BrCa_de_obj, n=Inf, p.value=0.05)), 
+                             go_id=go_terms),
+                               mart=ensembl)
+go_mart[go_mart$go_id %in% go_terms,]
+
+
+clone_enrich <- getEnrichedTerms(glm_obj_lst$CLONE, top_n=200)
+
+
+
+### --- GET KEGG PATHWAYS
+kegg_mart <- getGeneKEGGLinks("hsa", convert=TRUE)
+kegg_mart <- kegg_mart[(kegg_mart$PathwayID %in% c("path:hsa00190","path:hsa03440")),]
+
+
+
+

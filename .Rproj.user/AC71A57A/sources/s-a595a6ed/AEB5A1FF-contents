@@ -1,0 +1,919 @@
+######################################################################################################
+##
+##  BENCHMARKING FUNCTIONS
+##
+
+
+
+
+######################################################################################################
+### 
+### LOAD DATASETS                                    
+###
+
+LoadPBMC_stim <- function(DIR="local", condition="stim"){
+  
+  # https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE96583
+  # file_path <- "W:\\scDECAF\\datasets\\GSE96583_RAW.tar"
+  
+  # DIR="W:\\scDECAF\\datasets\\PBMC_stim\\"
+  # DIR="/stornext/Home/data/allstaff/w/whtifield.h/scDECAF/datasets/PBMC_stim/"
+  # DIR="C:\\Users\\whitfield.h\\Desktop\\Projects\\scDECAF\\Datasets\\PBMC_stim\\"
+  #Stim_raw <- DropletUtils::read10xCounts(paste0(DIR, "Stim\\"))
+  
+  annot <- read.table(paste0(getwd(), "/datasets/PBMC_stim/GSE96583_batch2.total.tsne.df.tsv"), sep="\t")
+  
+  if (condition == "stim"){
+    
+    singlet_ids <- intersect(rownames(annot[annot$stim %in% c("stim"),]), rownames(annot[annot$multiplets %in% c("singlet"),]))
+    
+    if (DIR == "local"){
+      DIR="C:\\Users\\whitfield.h\\Desktop\\Projects\\scDECAF\\Datasets\\PBMC_stim\\"
+      Stim_raw <- Seurat::Read10X(data.dir=paste0(DIR, "Stim\\"))
+      Stim_obj = CreateSeuratObject(counts = Stim_raw, project = "interferon-stimulated")
+    } else if (DIR == "server"){
+      Stim_raw <- Seurat::Read10X(data.dir=paste0(getwd(), "/datasets/PBMC_stim/Stim/"))
+      Stim_obj = CreateSeuratObject(counts = Stim_raw, project = "interferon-stimulated")
+    }
+  } else if (condition == "control") {
+    
+    singlet_ids <- intersect(rownames(annot[annot$stim %in% c("ctrl"),]), rownames(annot[annot$multiplets %in% c("singlet"),]))
+    
+    if (DIR == "local"){
+      DIR="C:\\Users\\whitfield.h\\Desktop\\Projects\\scDECAF\\Datasets\\PBMC_stim\\"
+      Stim_raw <- Seurat::Read10X(data.dir=paste0(DIR, "Control\\"))
+      Stim_obj = CreateSeuratObject(counts = Stim_raw, project = "control")
+    } else if (DIR == "server"){
+      Stim_raw <- Seurat::Read10X(data.dir=paste0(getwd(), "/datasets/PBMC_stim/Control/"))
+      Stim_obj = CreateSeuratObject(counts = Stim_raw, project = "control")
+    }
+  }
+  
+  
+  Stim_obj <- Stim_obj[,names(Stim_obj$orig.ident) %in% singlet_ids]
+  
+  return(Stim_obj)
+}
+
+
+
+
+
+######################################################################################################
+### 
+###   DATA PROCESSING                                      
+###
+
+prepData <- function(dat_obj, 
+                     feature_selection="standard",
+                     normalisation="scran", HVG_numb=3000,
+                     contains_empty_drops=FALSE){
+  
+  ### --- Remove empty droplets
+  if (contains_empty_drops){
+    dat_obj <- DropEmpty(dat_obj)
+  }
+  
+  #### ---- SHOULD ADJUST THIS
+  #   - filter out low-gene cells (min lib size = 1.8e3)
+  #   - remove genes that don't have many reads (10 reads)
+  #   - remove genes that are not seem in at least 5 cells
+  
+  ### --- Cell Filtering
+  dat_obj <- CheckCells(dat_obj)
+  
+  ### --- Gene Filtering
+  dat_obj <- FilterGenes(dat_obj, filter = feature_selection)
+  
+  ### --- Normalisation
+  if (normalisation %in% c("scran")){
+    dat_obj <- NormaliseData(dat_obj, norm=normalisation)
+  } else if (normalisation == "sctransform"){
+    dat_obj <- NormaliseData(dat_obj, norm=normalisation, features_n=HVG_numb)
+  }
+  
+  return(dat_obj)
+}
+
+Check_obj <- function(dat_obj, desired_class, dat_assays = "raw"){
+  
+  message(paste0("  Changing object class to ", desired_class))
+  
+  if (desired_class == "Seurat"){
+    if (class(dat_obj)[1] %in% c("SummarizedExperiment", "SingleCellExperiment")){
+       if (names(assays(dat_obj)) == "counts"){
+         output_obj <- as.Seurat(dat_obj, counts="counts", data=NULL)
+       } else {
+         output_obj <- as.Seurat(dat_obj, counts="counts", data = "logcounts")
+       }
+      
+    } else {
+      output_obj <- dat_obj
+    } 
+  } else if (desired_class == "SummarizedExperiment"){
+    if (class(dat_obj)[1] == "Seurat"){
+      output_obj <- as.SingleCellExperiment(dat_obj)
+    } 
+  } else if (desired_class == "SingleCellExperiment"){
+    if (class(dat_obj)[1] == "Seurat"){
+      output_obj <- Seurat2SCE(dat_obj, dat_count=dat_assays)
+    } else if (class(dat_obj)[1] == "SummarizedExperiment"){
+      if ("logcounts" %in% names(assays(dat_obj)))
+        output_obj <- SingleCellExperiment(assays=list(counts=counts(dat_obj), logcounts=logcounts(dat_obj)))
+    } else {
+      output_obj <- dat_obj
+    }
+  }
+  
+  return(output_obj)
+}
+
+Seurat2SCE <- function(seurat_obj, dat_count="raw"){
+  if (dat_count == "raw"){
+    return(SingleCellExperiment(assays=list(counts=as.matrix(GetAssayData(seurat_obj, "data")))))
+  } else if (dat_count == "logcounts"){
+    return(SingleCellExperiment(assays=list(logcounts=as.matrix(GetAssayData(seurat_obj, "data")))))
+  }
+  
+}
+
+PlotEmpty <- function(dat_obj){
+  dat_obj <- Check_obj(dat_obj, "SingleCellExperiment")
+
+  bc_rank <- barcodeRanks(counts(dat_obj))
+  qplot(bc_rank$total, bc_rank$rank, geom = "line") +
+    geom_vline(xintercept = metadata(bc_rank)$knee, color = "blue", linetype = 2) +
+    geom_vline(xintercept = metadata(bc_rank)$inflection, color = "green", linetype = 2) +
+    annotate("text", y = 1000, x = 1.5 * c(metadata(bc_rank)$knee, metadata(bc_rank)$inflection),
+             label = c("knee", "inflection"), color = c("blue", "green")) +
+    scale_x_log10() +
+    scale_y_log10() +
+    labs(y = "Barcode rank", x = "Total UMI count")
+}
+
+DropEmpty <- function(dat_obj, lower_amb=100){
+  dat_obj <- Check_obj(dat_obj, "SingleCellExperiment")
+  set.seed(100)
+  e.out <- DropletUtils::emptyDrops(counts(dat_obj), lower=lower_amb)
+  summary(e.out$FDR <= 0.001)
+  dat_obj <- dat_obj[,which(e.out$FDR <= 0.001)]
+  return(dat_obj)
+}
+
+
+
+FilterGenes <- function(dat_obj, filter = "standard"){
+  
+  if (filter == "standard"){
+    message(paste0("# Filtering genes : ", filter))
+    dat_obj <- Check_obj(dat_obj, "SingleCellExperiment")
+    numb_removed <- sum(!(as.vector(rowSums(counts(dat_obj))>0)))
+    dat_obj <- dat_obj[as.vector(rowSums(counts(dat_obj))>0),]
+    dat_obj <- dat_obj[!(duplicated(rownames(dat_obj))),]
+    
+  }
+  
+  if (numb_removed > 0){
+    print(paste0("  ", numb_removed, " genes were filtered"))
+  }
+  
+  return(dat_obj)
+}
+
+CheckCells <- function(dat_obj, GenesDetect=300, LibDetect=100){
+  message(paste0("# Checking cell quality "))
+  
+  dat_obj <- Check_obj(dat_obj, "SingleCellExperiment")
+  
+  dat_obj <- scater::addPerCellQC(dat_obj)
+  dat_obj <- scater::addPerFeatureQC(dat_obj)
+
+  GeneFilter <- dat_obj$detected<GenesDetect
+  qc.lib <- dat_obj$sum<LibDetect
+  
+  ### Filter cells
+  discard <- qc.lib | GeneFilter
+  dat_obj <- dat_obj[, !(discard)]
+  
+  if (sum(discard) > 0){
+    print(paste0("  ", sum(discard), " cells were discarded"))
+  }
+  
+  return(dat_obj)
+
+}
+
+NormaliseData <- function(dat_obj, norm="scran", features_n=3000){
+  
+ 
+  if (norm == "scran"){
+    ### --- Scran by convolution
+    message(paste0("# Normalising : ", norm))
+    
+    dat_obj <- Check_obj(dat_obj, "SingleCellExperiment")
+    set.seed(1000)
+    clusters <- quickCluster(dat_obj)
+    
+    ## Adds sizeFactors() to sce object
+    dat_obj <- scran::computeSumFactors(dat_obj, cluster=clusters, min.mean=0.1)  # min.mean=0.1 ?
+    
+    ## Apply convolution size factors computed
+    dat_obj <- logNormCounts(dat_obj)
+  } else if (norm == "sctransform") {
+    ### --- ScTransform
+    message(paste0("# Normalising : ", norm))
+    
+    dat_obj <- Check_obj(dat_obj, "Seurat")
+    dat_obj <- SCTransform(object = dat_obj, verbose = FALSE, variable.features.n = features_n)
+  }
+}
+
+######################################################################################################
+### 
+###   RUN METHODS                                      
+###
+
+Run_Routine <- function(dat_obj, 
+                        genesetList,
+                        norm_type = "",  ## one of "scran" or "sctransform"
+                        hvg_n = c(1000, 2000, 3000),
+                        genesetDirection="two", cellID_str="CellID",
+                        path_to_save="/stornext/Home/data/allstaff/w/whitfield.h/scDECAF/data/benchmarking_results/"){
+  ## For a given normalisation strategy (including HVG & embedding type)
+  ## and for a given collection of gene sets
+  ## we run the data through each of the methods,
+  ## varying the number of genes used as input
+  
+  ### --- FEATURE SELECTION
+  
+  features <- list()
+  
+  ## Get overlapping genes
+  dat_obj <- dat_obj[intersect(rownames(dat_obj), unique(as.vector(unlist(genesetList)))),]
+
+  if (dim(dat_obj)[1] > max(hvg_n)){
+    ## Subset to highly variable genes
+    for (iHVG in hvg_n){
+      message("# HVGs are being selected")
+      HVG_lst <- GetHVGs(dat_obj, norm_type, iHVG)
+      features[[paste0("hvg_",as.character(iHVG))]] <- HVG_lst[HVG_lst %in% rownames(dat_obj)]
+    }
+  } else if (max(hvg_n) > dim(dat_obj)[1]){
+    print("# Check numb. genes in data vs HVGs")
+  } else {
+    if (class(dat_obj)[1] == "Seurat"){
+      features$overlap <- rownames(as.matrix(GetData(dat_obj)))
+    } else{
+      features$overlap <- rownames(dat_obj)
+    }
+  }
+  features[["hvg_ALL"]] <- rownames(dat_obj)
+  
+  
+  ### - maybe subset data before this??
+  
+  score_lst <- list()
+  
+  ### --- RUN SCDECAF
+  for (iFeature in names(features)){
+    iOutput <- Run_scDECAF(dat_obj, features[[iFeature]], genesetList, 
+                bedbed=ifelse(norm_type == "scran", "scater_umap", "sct_umap"),
+                standardise = FALSE)
+    iScore_df <- attr(iOutput,"raw_scores")
+    score_lst[[paste0("scDECAF_",norm_type,"_",iFeature)]] <- iScore_df
+  }
+  
+  save(score_lst, file=paste0(path_to_save, "intermediate_tmp.Rdata"))
+
+  ### --- RUN VISION
+  ### Make genesets object
+  genesigs_obj <- MakeVisionObject(genesetList, biDirection=ifelse(genesetDirection=="two", TRUE, FALSE))
+  genesetNames <- unlist(lapply(genesigs_obj, function(x){attributes(x)$name}))
+  
+  if (!(is.null(cellID_str))){
+    dat_obj$CellID <- as.character(dat_obj[[cellID_str]])
+  }
+  
+  
+  dat_obj <- Run_Vision(dat_obj, genesigs_obj, paste0(path_to_save, norm_type, "_visionResults.Rdata"))
+  iScore_df <- colData(dat_obj)[, colnames(colData(dat_obj)) %in% genesetNames]
+  score_lst[[paste0("VISION_",norm_type,"_allgenes")]] <- iScore_df
+#  for (iFeature in names(features)){
+#  dat_obj <- Run_Vision(dat_obj,  features[[iFeature]], genesigs_obj, paste0(path_to_save, norm_type, "_", iFeature, "_visionResults.Rdata"))
+#  iScore_df <- colData(dat_obj)[, colnames(colData(dat_obj)) %in% genesetNames]
+  #rownames(iScore_df) <- 
+#  score_lst[[paste0("VISION_",norm_type,"_",iFeature)]] <- iScore_df
+#  }
+  
+  return(score_lst)
+}
+
+Run_Vision <- function(dat_obj, genesigs_obj, SAVE_PATH){
+  ### --- Make Vision object -- "Expression data should be scaled and normalized, but not log-transformed"
+  
+  # Scale counts within a sample -- alternative
+  # n.umi <- colSums(counts(sce_object))
+  # scaled_counts <- t(t(counts(sce_object)) / n.umi) * median(n.umi)
+  
+  #dat_obj <- dat_obj[intersect(rownames(dat_obj),features_lst),]
+  
+  #message(paste0("#####  Running Vision "))
+  #message(paste0(" HVGs : ", as.character(length(features_lst))))
+  
+  dat_obj <- Check_obj(dat_obj, "SingleCellExperiment")
+  
+  if (!("normcounts" %in% names(assays(dat_obj)))) {
+    # Or use scater
+    message(" Normalising counts with scater")
+  #  sizeFactors(dat_obj) <- dat_obj$ConvSizeFact
+    dat_obj <- scater::logNormCounts(dat_obj, log=FALSE, exprs_values = "counts")
+  }
+  
+  if (is.null(colnames(dat_obj))){
+    colnames(dat_obj) <- dat_obj$CellID
+  }
+  
+ 
+  VISION_Obj <- Vision(data = normcounts(dat_obj), signatures = genesigs_obj, pool=FALSE, min_signature_genes=10) #, meta=MetaData)
+  # make object and EITHER a list of Gene Signatures or a data.frame of meta-data.
+  # min_signature_genes Signature that match less than this number of genes in the supplied expression matrix are removed.
+  
+  ### --- Run
+  options(mc.cores = 2)
+  VISION_RESULTS <- analyze(VISION_Obj)
+  
+  ### View results
+  # viewResults(VISION_RESULTS)
+  
+  ### Display autocorrelation coefficients, p-values for signatures
+  # head(getSignatureAutocorrelation(VISION_RESULTS))
+  save(VISION_RESULTS,file=SAVE_PATH)
+  
+  ### --- Append scores
+  for (iSig in colnames(getSignatureScores(VISION_RESULTS))){
+    sigScores <- getSignatureScores(VISION_RESULTS)[, iSig]
+    dat_obj[[iSig]] <- sigScores
+  }
+  
+  tsne <- getProjections(VISION_RESULTS)[["tSNE30"]]
+  dat_obj$VISION_tsne_x <- tsne[, 1]
+  dat_obj$VISION_tsne_y <- tsne[, 2]
+  
+  return(dat_obj)
+}
+
+
+Run_AUCell <- function(dat_obj, gene_sets){
+  # 1. Build the rankings
+  # 2. Calculate the Area Under the Curve (AUC)
+  # 3. Set the assignment thresholds
+  ### Vingette : https://bioconductor.org/packages/devel/bioc/vignettes/AUCell/inst/doc/AUCell.html
+  
+  cells_rankings <- AUCell_buildRankings(exprMatrix)
+  
+  cells_AUC <- AUCell_calcAUC(geneSets, cells_rankings, aucMaxRank=nrow(cells_rankings)*0.05)
+  
+  par(mfrow=c(3,3))
+  set.seed(123)
+  cells_assignment <- AUCell_exploreThresholds(cells_AUC, plotHist=TRUE, nCores=1, assign=TRUE)
+  
+}
+
+PAGODA_geneIDs <- function(gene_lst){
+  library(org.Hs.eg.db)
+  ids <- unlist(lapply(mget(gene_lst, org.Hs.egALIAS2EG, ifnotfound = NA), function(x) x[1]))
+  rids <- names(ids); names(rids) <- ids
+  go.env <- lapply(mget(ls(org.Hs.egGO2ALLEGS), org.Hs.egGO2ALLEGS), function(x) as.character(na.omit(rids[x])))
+  go.env <- clean.gos(go.env)
+  go.env <- list2env(go.env)
+  return(go.env)
+}
+
+Run_PAGODA <- function(dat_obj, geneset_lst){
+  # @param counts read count matrix. The rows correspond to genes (should be named), columns correspond to individual cells. The matrix should contain integer counts
+  # In the vignette the authors suggest that we
+  #   - filter out low-gene cells (min lib size = 1.8e3)
+  #   - remove genes that don't have many reads (10 reads)
+  #   - remove genes that are not seem in at least 5 cells
+  ## Following vingette : http://hms-dbmi.github.io/scde/pagoda.html
+  
+  if (class(dat_obj)[1] == "SingleCellExperiment"){
+    print("Y")
+    counts_mat <- as.matrix(counts(dat_obj))
+    counts_mat <- apply(counts_mat,2,function(x) {storage.mode(x) <- 'integer'; x})
+    
+  } else{
+    counts_mat <- as.matrix(GetData(dat_obj))
+    counts_mat <- apply(counts_mat,2,function(x) {storage.mode(x) <- 'integer'; x})
+  }
+
+  gene_env <- PAGODA_geneIDs(geneset_lst)
+  
+  ## Fitting error models
+  knn <- knn.error.models(counts_mat, k = ncol(counts_mat)/4, n.cores = 1, min.count.threshold = 2, min.nonfailed = 5, max.model.plots = 10)
+ 
+  ## Normalise variance
+  varinfo <- pagoda.varnorm(knn, counts = counts_mat, trim = 3/ncol(counts_mat), max.adj.var = 5, n.cores = 1, plot = FALSE)
+  
+  ## Control for sequencnig depth
+  varinfo <- pagoda.subtract.aspect(varinfo, colSums(counts_mat[, rownames(knn)]>0))
+  
+  ## Calculate PCA per gene set
+  pwpca <- pagoda.pathway.wPCA(varinfo, gene_env, n.components = 1, n.cores = 1)
+  
+  ## Overdispersion per gene set
+  df <- pagoda.top.aspects(pwpca, return.table = TRUE, plot = FALSE, z.score = 1.96)
+  
+  ## Test clusters?
+  clpca <- pagoda.gene.clusters(varinfo, trim = 7.1/ncol(varinfo$mat), n.clusters = 50, n.cores = 1, plot = FALSE)
+  
+  ##### ----- Visualise significant aspects of heterogeneity
+  tam <- pagoda.top.aspects(pwpca, clpca, n.cells = NULL, z.score = qnorm(0.01/2, lower.tail = FALSE))
+  ## Determine overall cell clustering
+  hc <- pagoda.cluster.cells(tam, varinfo)
+  tamr <- pagoda.reduce.loading.redundancy(tam, pwpca, clpca)
+  
+  tamr2 <- pagoda.reduce.redundancy(tamr, distance.threshold = 0.9, plot = FALSE, cell.clustering = hc, labRow = NA, labCol = NA, box = TRUE, margins = c(0.5, 0.5), trim = 0)
+  
+  col.cols <- rbind(groups = cutree(hc, 3))
+  pagoda.view.aspects(tamr2, cell.clustering = hc, box = TRUE, labCol = NA, margins = c(0.5, 20), col.cols = COLOURS)
+  
+}
+
+Run_scDECAF <- function(dat_obj, 
+                        features_lst,
+                        genesetList,
+                        bedbed="scater_umap", # One of: sct_umap, scater_umap
+                        genesetThresh=5,
+                        standardise = TRUE
+                        ){
+  
+  ### --- Subset data
+  data_df <- as.matrix(GetData(dat_obj))
+  data_df <- data_df[features_lst[features_lst %in% rownames(data_df)],]
+  dat_obj <- dat_obj[features_lst[features_lst %in% rownames(data_df)],]
+  features_lst <- features_lst[features_lst %in% rownames(data_df)]
+  
+  ### --- Cell embeddings
+  cell_embed <- GetEmbedding(dat_obj, embeddingtype=bedbed)
+  
+  ### --- Overlapping genes
+  target <- scDECAF::genesets2ids(data_df[match(features_lst, rownames(data_df)),], genesetList) # genesetList=pb_markers
+  
+  genesetDrop <- unlist(lapply(as.vector(colSums(target)), function(x){ifelse(x<genesetThresh, FALSE, TRUE)}))
+  target <- target[,genesetDrop]
+  
+  message(paste0("#####  Running scDECAF "))
+  message(paste0(" Standardise : ", standardise))
+  message(paste0(" Cell Embedding type : ", bedbed))
+  message(paste0(" HVGs : ", as.character(length(features_lst))))
+  message(paste0(" # of Genesets : ", dim(target)[2]))
+  
+  # fast svd of t(x)%*%z, where ncol(x)>>nrow(x) and same for z
+  output <- scDECAF::scDECAF(data = data_df, gs = target, standardize = standardise, 
+                     hvg = features_lst, k = 10, embedding = cell_embed, cca.k=10,
+                     n_components = 10, max_iter = 2, thresh = 0.5)
+  return(output)
+}
+
+GetData <- function(dat_obj){
+  if (class(dat_obj)[1] == "Seurat"){
+    return(GetAssayData(object = dat_obj, slot = 'scale.data'))
+  } else {
+    return(counts(dat_obj))
+  }
+}
+
+GetEmbedding <- function(dat_obj, embeddingtype="scater_umap"){
+  
+  message(paste0("# Calculating cell embedding : ", embeddingtype))
+  
+
+  if (embeddingtype == "sct_umap"){
+    dat_obj <- Check_obj(dat_obj, "Seurat")
+    
+    if (!("SCT" %in% names(Key(dat_obj)))){
+      message(paste0("# WARNING: You cannot use seurat's UMAP without scTransform"))
+      message("  Changing embeddingtype to scater_umap")
+      dat_obj <- Check_obj(dat_obj, "SingleCellExperiment")
+      dat_obj <- scater::runUMAP(dat_obj, scale=FALSE,  exprs_values = "logcounts")
+      cell_embeddings = as.data.frame(reducedDim(dat_obj, "UMAP"))
+      
+    } else {
+      dat_obj <- RunUMAP(object = dat_obj, features=rownames(dat_obj), reduction.key = 'sctUMAP_', reduction.name = 'sctumap')
+      cell_embeddings <- as.data.frame(dat_obj@reductions$sctumap@cell.embeddings)
+    }
+    
+  } else if (embeddingtype == "scater_umap"){
+    dat_obj <- Check_obj(dat_obj, "SingleCellExperiment")
+    dat_obj <- scater::runUMAP(dat_obj, scale=FALSE,  exprs_values = "logcounts")
+    cell_embeddings = as.data.frame(reducedDim(dat_obj, "UMAP"))
+  }
+  
+  return(cell_embeddings)
+}
+
+GetHVGs <- function(dat_obj, hvg_type, hvg_n=3000){
+  
+  if (is.null(hvg_type)){
+    return(rownames(dat_obj))
+    
+  } else if (hvg_type == "sctransform") {  #vst
+    message(paste0("# Getting HVGs : ", hvg_type))
+    dat_obj <- Check_obj(dat_obj, "Seurat")
+    dat_obj <- FindVariableFeatures(dat_obj, selection.method = "vst", nfeatures = hvg_n)
+    return(VariableFeatures(object = dat_obj))
+    
+  } else if (hvg_type == "scran"){
+    message(paste0("# Getting HVGs : ", hvg_type))
+    dat_obj <- Check_obj(dat_obj, "SingleCellExperiment")
+    #hvgs <- scran::getTopHVGs(dat_obj, fdr.threshold=0.05)
+    dat_obj$stim <- unlist(lapply(colnames(dat_obj), function(x){strsplit(x, "_")[[1]][1]}))
+    dat_varModel <-  scran::modelGeneVar(dat_obj, block=dat_obj$stim, density.weights=FALSE)
+    return(scran::getTopHVGs(dat_varModel , n=hvg_n))
+  }
+}
+
+
+######################################################################################################
+### 
+###    BENCHMARK METRICS                                      
+###
+
+KS_metric <- function(df, group_boolean, pvalue=TRUE){
+  
+  KS_statistics <- c()
+  for (iGeneset in colnames(df)){
+    ks_x <- ks.test(df[group_boolean,iGeneset], df[!(group_boolean),iGeneset], alternative = "two.sided")
+    KS_statistics <- c(KS_statistics, ifelse(pvalue, ks_x$p.value[[1]], ks_x$statistic[[1]]))
+  }
+  
+  names(KS_statistics) <- colnames(df)
+  
+  return(KS_statistics)
+}
+
+
+GetMetrics <- function(score_dfs_lst, genesets_of_interest, group_boolean, pvalue_bool){
+  
+  #Metrics_lst <- list()
+  Metrics_df <- data.frame(row.names=genesets_of_interest)
+  for (iName in names(score_dfs_lst)){
+    iScore_df <- score_dfs_lst[[iName]]
+    iScore_df <- as.data.frame(iScore_df)
+    iScore_df <- iScore_df[colnames(iScore_df) %in% genesets_of_interest]
+  #  Metrics_lst[[paste0(iName, "_KS")]] <- KS_metric(iScore_df, group_boolean)
+    iMetrics <- as.data.frame(KS_metric(iScore_df, group_boolean, pvalue= pvalue_bool))
+    #Metrics_df <- merge(Metrics_df, as.data.frame(KS_metric(iScore_df, group_boolean, pvalue= pvalue_bool)), by="row.names", all=TRUE)
+    x <- merge(Metrics_df, iMetrics, by="row.names", all=TRUE, no.dups=TRUE)
+    Metrics_df <- as.data.frame(x, row.names = x$Row.names)
+    Metrics_df <- Metrics_df[!colnames(Metrics_df) %in% c("Row.names")]
+  }
+  
+  colnames(Metrics_df) <- names(score_dfs_lst)
+  
+  return(Metrics_df)
+}
+
+######################################################################################################
+### 
+###      GENESET RELATED                                       
+###
+
+GetMSigDB <- function(database="Hallmarks"){
+  
+  if (substr(getwd(), 2, 9) == "stornext"){
+    Hallmark_Geneset_DIR="/stornext/Home/data/allstaff/w/whitfield.h/data_load/genesets/h.all.v7.0.symbols.gmt"
+    C2_DIR="/stornext/Home/data/allstaff/w/whitfield.h/data_load/genesets/c2.all.v7.1.symbols.gmt"
+    SC_DIR="/stornext/Home/data/allstaff/w/whitfield.h/data_load/genesets/scsig.all.v1.0.1.symbols.gmt"
+  } else {
+    Hallmark_Geneset_DIR="C:\\Users\\whitfield.h\\Desktop\\Projects\\B_I_G_Data\\GeneSets\\MSigDB\\msigdb.v7.2.symbols.gmt"
+    C2_DIR="C:\\Users\\whitfield.h\\Desktop\\Projects\\B_I_G_Data\\GeneSets\\MSigDB\\c2.all.v7.1.symbols.gmt"
+    SC_DIR="C:\\Users\\whitfield.h\\Desktop\\Projects\\B_I_G_Data\\GeneSets\\MSigDB\\scsig.all.v1.0.1.symbols.gmt"
+  }
+
+  if (database == "Hallmarks") {
+    Hallmark_Genesets <- list()
+    conn <- file(Hallmark_Geneset_DIR,open="r")
+    linn <-readLines(conn)
+    for (i in 1:length(linn)){
+      iLine <- linn[i]
+      iLine <- strsplit(iLine, "\t")
+      iName <- iLine[[1]][1]
+      iList <- iLine[[1]]
+      iList <- iList[3:length(iList)]
+      Hallmark_Genesets[[iName]] <- iList
+     # Hallmark_Genesets <- c(Hallmark_Genesets, list(GeneSet(setName=iName, geneIds=iList)))
+    }
+    close(conn)
+    return(Hallmark_Genesets)
+    
+  } else if (database == "C2") {
+    C2_Genesets <- list()
+    conn <- file(C2_DIR,open="r")
+    linn <-readLines(conn)
+    for (i in 1:length(linn)){
+      iLine <- linn[i]
+      iLine <- strsplit(iLine, "\t")
+      iName <- iLine[[1]][1]
+      iList <- iLine[[1]]
+      iList <- iList[3:length(iList)]
+      C2_Genesets[[iName]] <- iList
+      #C2_Genesets <- c(C2_Genesets, list(GeneSet(setName=iName, geneIds=iList)))
+    }
+    close(conn)
+    return(C2_Genesets)
+  } else if (database == "Both"){
+    Genesets <- list()
+    conn <- file(Hallmark_Geneset_DIR,open="r")
+    linn <-readLines(conn)
+    for (i in 1:length(linn)){
+      iLine <- linn[i]
+      iLine <- strsplit(iLine, "\t")
+      iName <- iLine[[1]][1]
+      iList <- iLine[[1]]
+      iList <- iList[3:length(iList)]
+      Genesets[[iName]] <- iList
+
+    }
+    close(conn)
+
+    conn <- file(C2_DIR,open="r")
+    linn <-readLines(conn)
+    for (i in 1:length(linn)){
+      iLine <- linn[i]
+      iLine <- strsplit(iLine, "\t")
+      iName <- iLine[[1]][1]
+      iList <- iLine[[1]]
+      iList <- iList[3:length(iList)]
+      Genesets[[iName]] <- iList
+
+    }
+    close(conn)
+    
+    return(Genesets)
+  } else if (database == "SC"){
+    SC_Genesets <- list()
+    conn <- file(SC_DIR,open="r")
+    linn <-readLines(conn)
+    for (i in 1:length(linn)){
+      iLine <- linn[i]
+      iLine <- strsplit(iLine, "\t")
+      iName <- iLine[[1]][1]
+      iList <- iLine[[1]]
+      iList <- iList[3:length(iList)]
+      SC_Genesets[[iName]] <- iList
+      # Hallmark_Genesets <- c(Hallmark_Genesets, list(GeneSet(setName=iName, geneIds=iList)))
+    }
+    close(conn)
+    return(SC_Genesets)
+  }
+  
+}
+
+
+MakeVisionObject <- function(genesetList, biDirection=TRUE){
+  MSigDB_signatures <- c()
+  message("# Converting genesets to Vision objects")
+  
+  if (biDirection){
+    if (length(genesetList[grepl("UP", names(genesetList))]) > 0){
+      
+      x <- genesetList[grepl("UP", names(genesetList))]
+      y <- unlist(strsplit(names(x), "_UP"))
+      
+      
+      for (iDirGeneSet in y){
+        
+        # print(paste0(" -> Extracting ", iDirGeneSet, " UP and DN..."))
+        
+        UP_str <- paste0(iDirGeneSet, "_UP", "")
+        DN_str <- paste0(iDirGeneSet, "_DN", "")
+        
+        UP_genes <- genesetList[names(genesetList) == UP_str][[UP_str]]
+        DN_genes <- genesetList[names(genesetList) == DN_str][[DN_str]]
+        
+        ### Make signature object
+        UPDN_genes <- c(rep(1,length(UP_genes)), rep(-1, length(DN_genes)))
+        names(UPDN_genes) <- c(UP_genes, DN_genes)
+        iDirSet <- VISION::createGeneSignature(name = iDirGeneSet, sigData = UPDN_genes)
+        
+        MSigDB_signatures <- c(MSigDB_signatures, iDirSet)
+      }
+      
+      genesetList <- genesetList[!(names(genesetList) %in% c(paste0(y, "_UP"), paste0(y, "_DN")))]
+    }
+  }
+  
+  for (iSig in names(genesetList)){
+   # print(paste0("-> Extracting ",iSig,""))
+    iGeneIDs <- genesetList[names(genesetList) %in% c(iSig)][[iSig]]
+    
+    ### Make signature object
+    iSig_genes <- rep(1,length(iGeneIDs))
+    names(iSig_genes) <- iGeneIDs
+    SigObject <- createGeneSignature(name = iSig, sigData = iSig_genes)
+    
+    MSigDB_signatures <- c(MSigDB_signatures, SigObject)
+    
+  }
+  
+  return(MSigDB_signatures)
+}
+
+
+GetVisionObject_MSigDB <- function(){
+
+  if (substr(getwd(), 2, 9) == "stornext"){
+    Hallmark_Geneset_DIR="/stornext/Home/data/allstaff/w/whitfield.h/BIG_DATA/GeneSets/h.all.v7.0.symbols.gmt"
+    C2_DIR="/stornext/Home/data/allstaff/w/whitfield.h/BIG_DATA/GeneSets/c2.all.v7.1.symbols.gmt"
+  } else {
+    Hallmark_Geneset_DIR="C:\\Users\\whitfield.h\\Desktop\\Projects\\B_I_G_Data\\GeneSets\\MSigDB\\msigdb.v7.2.symbols.gmt"
+    C2_DIR="C:\\Users\\whitfield.h\\Desktop\\Projects\\B_I_G_Data\\GeneSets\\MSigDB\\c2.all.v7.1.symbols.gmt"
+  }
+  
+
+  message("# Loading C2 genesets from MSigDB")
+  conn <- file(C2_DIR,open="r")
+  C2_db <- getGmt(conn)
+  close(conn)
+
+  MSigDB_signatures <- c()
+  message("# Converting genesets to Vision objects")
+  if (length(Sig_names_lst[grepl("DN", Sig_names_lst)]) > 0){
+    
+    x <- Sig_names_lst[grepl("DN", Sig_names_lst)]
+    y <- unlist(strsplit(x, "_DN"))
+    
+    
+    for (iDirGeneSet in y){
+      
+      print(paste0(" -> Extracting ", iDirGeneSet, " UP and DN..."))
+      
+      UP_str <- paste0(iDirGeneSet, "_UP", "")
+      UP_genes <- geneIds(C2_db[names(C2_db) == UP_str])[[UP_str]]
+      DN_str <- paste0(iDirGeneSet, "_DN", "")
+      DN_genes <- geneIds(C2_db[names(C2_db) == DN_str])[[DN_str]]
+      
+      ### Make signature object
+      UPDN_genes <- c(rep(1,length(UP_genes)), rep(-1, length(DN_genes)))
+      names(UPDN_genes) <- c(UP_genes, DN_genes)
+      iDirSet <- createGeneSignature(name = iDirGeneSet, sigData = UPDN_genes)
+      
+      MSigDB_signatures <- c(MSigDB_signatures, iDirSet)
+    }
+    
+    Sig_names_lst <- Sig_names_lst[!(grepl("DN|UP", Sig_names_lst))]
+  }
+  
+  for (iSig in names(C2_db)){
+    print(paste0("-> Extracting ",iSig,""))
+    iGeneIDs <- geneIds(C2_db[names(C2_db) %in% c(iSig)])[[iSig]]
+    
+    ### Make signature object
+    iSig_genes <- rep(1,length(iGeneIDs))
+    names(iSig_genes) <- iGeneIDs
+    SigObject <- createGeneSignature(name = iSig, sigData = iSig_genes)
+    
+    MSigDB_signatures <- c(MSigDB_signatures, SigObject)
+    
+  }
+  
+  return(MSigDB_signatures)
+}
+
+
+######################################################################################################
+### 
+###   PLOTTING                                            
+###
+
+ggHeatmap <- function(DATA, genes_to_subset, ColourBy_cell, COLOUR_vector, 
+                         scale = "Genes",cluster_genes =FALSE, RowSide=NA, RowSide.pal=NA){
+  
+  genes_to_subset <- unique(genes_to_subset)
+  genes_to_subset <- genes_to_subset[genes_to_subset %in% rownames(DATA)]
+  
+  colNames <- colnames(DATA)
+  DATA <- t(DATA[rownames(DATA) %in% genes_to_subset,])
+  
+  
+  if (scale == "Genes"){
+    ## Scale the columns (or genes)
+    DATA <- as.data.frame(scale(DATA))
+    
+  } else if (scale == "Samples"){
+    
+    DATA <- as.data.frame(t(scale(t(DATA))))
+    
+  } else if (scale == "Both") {
+    
+    DATA <- t(scale(t(DATA)))
+    DATA <- as.data.frame(scale(DATA))
+    
+  } else if (scale == "None"){
+    DATA <- as.data.frame(DATA)
+    
+  }
+  
+  
+  DATA_orig <- DATA
+  
+  if (!is.na(RowSide)){
+    if (is.na(RowSide.pal)){
+      RowSide.pal <- c("#CABEE9", "#7C7189", "#FAE093", "#D04E59", "#BC8E7D", "#2F3D70")
+      RowSide.pal <- RowSide.pal[1:length(unique(RowSide))]
+      names(RowSide.pal) <- unique(RowSide)
+      
+      
+    }
+    
+    SideBar_dict <- RowSide
+    names(SideBar_dict) <- colNames
+    SideBarColours_dict <- as.vector(unlist(lapply(names(SideBar_dict), function(x){RowSide.pal[SideBar_dict[x]]})))
+    names(SideBarColours_dict) <- colNames
+    
+
+    heatmap.2(as.matrix(DATA_orig), scale = "none", 
+             dendrogram = "column",Rowv=TRUE, Colv=TRUE,
+             cexRow=0.8,
+             #margin=c(1,1),trace="none", 
+             #lhei = c(4,10),lwid = c(6,6), lmat=rbind( c(3, 4), c(1,2)),
+             col=COLOUR_vector, 
+             RowSideColors=SideBarColours_dict,
+             key=FALSE) # rev(brewer.pal(name = "YlGnBu", n=9))
+
+    
+  } else {
+    
+    ### Clustering on rows and columns to reorder geom_tiles()
+    
+    ddr <- as.dendrogram(flashClust::hclust(stats::dist(DATA)))
+    Rowv <- rowMeans(DATA, na.rm = TRUE)
+    hcr <- flashClust::hclust(stats::dist(DATA))
+    ddr <- as.dendrogram(hcr)
+    ddr <- reorder(ddr, Rowv)
+    rowInd <- order.dendrogram(ddr)
+    
+    if (cluster_genes == FALSE){
+      
+      colInd <- match(genes_to_subset,colnames(DATA))
+    } else {
+      Colv <- colMeans(DATA, na.rm = TRUE)
+      hcc <- hclust(dist(t(DATA)))
+      ddc <- as.dendrogram(hcc)
+      ddc <- reorder(ddc, Colv)
+      colInd <- order.dendrogram(ddc)
+    }
+    
+    
+    #library(gplots)
+    #  p1 <- heatmap.2(DATA, scale = "none")
+    # p1 <- heatmap(as.matrix(plot_df), Rowv=NA, Colv=NA, scale="row") #RowSideColors=colSide, col=colMain 
+    
+    DATA <- DATA[,colnames(DATA)[colInd]]
+    names(DATA) <- factor(names(DATA), levels = unique(names(DATA)))
+    
+    DATA$ColourBy <- ColourBy_cell 
+    DATA <- DATA[rowInd,]
+    DATA$ColourBy <- factor(DATA$ColourBy, levels=unique(DATA$ColourBy))
+    
+    
+    DATA <- reshape2::melt(DATA, value.name="LogCounts", id.vars="ColourBy")
+    DATA$`LogCounts` <- as.numeric(DATA$`LogCounts`)
+    
+    NA_COL <-  COLOUR_vector [length(COLOUR_vector )/2]
+    
+    p1 <- ggplot(DATA, aes(ColourBy, variable, fill = `LogCounts`)) +
+      geom_tile() + theme(axis.text.x=element_text(hjust=1,angle=45, size=14), axis.text.y=element_text(size=12))+ #hjust=1,vjust=0.5, 
+      scale_fill_gradientn(colours=COLOUR_vector, na.value=NA_COL) #  Colours[length(Colours)/2] # limits = LIM,
+    #    scale_fill_distiller(palette=colorRampPalette(ocean.curl), limits = c(-2, 2))
+    return(p1)
+  }
+  
+  
+}
+
+
+
+
+######################################################################################################
+### 
+###   SOROOR'S FUNCTIONS                                             
+###
+
+
+genesets2ids <- function(y, genesetlist){
+  target_symbols <- unique(unlist(genesetlist))
+  keep_idx <- unlist(limma::ids2indices(target_symbols,rownames(y)))
+  INDX <- matrix(0, nrow = length(keep_idx), ncol= length(genesetlist), dimnames = list(rownames(y[keep_idx,]), names(genesetlist)))
+  tnbc_idx <- limma::ids2indices(genesetlist, rownames(y[keep_idx,]))
+  
+  for (i in 1:length(tnbc_idx)){
+    INDX[tnbc_idx[[i]],i] <- 1
+  }
+  
+  INDX
+}
+
+

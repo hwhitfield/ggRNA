@@ -1,0 +1,156 @@
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#
+#   For DE analysis between primary and MPE
+#
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+
+
+##### ----- Get directories
+setwd("./MPE_paper_analysis/")
+data_dir <- paste0(getwd(),"/data/")
+matrix_dir <- paste0(data_dir,"raw_matrices/")
+pal_etal_dir <- paste0(data_dir,"pal_etal_data/")
+fig_dir <- paste0(getwd(),"/figures/")
+
+source(paste0(getwd(),"/scripts/helper_functions.R"))
+
+#wd="/stornext/Home/data/allstaff/w/whitfield.h/MPE_paper_analysis/"
+#source("/stornext/Home/data/allstaff/w/whitfield.h/PhD_Project_MPE/MPE_paper_analysis/scripts/helper_functions.R")
+
+
+fig_dir <- "/stornext/Home/data/allstaff/w/whitfield.h/PhD_Project_MPE/MPE_paper_analysis/figures/compare_to_bulk"
+
+
+##### ----- Load metadata ----------------------------------------------------------
+
+pal_metadata  <- read.table(file="/stornext/Home/data/allstaff/w/whitfield.h/data/_datasets/sc/Smyth_HumanBrCa/ALL_metadata.tsv",sep="\t")
+pal_metadata <- pal_metadata[pal_metadata$celltype == "Epithelial",]
+#pal_metadata <- pal_metadata[pal_metadata$group %in% names(PAL_patients_to_keep),]
+
+
+
+ALL_COLDATA  <- read.table(file=paste0(data_dir,"ALL_COLDATA.tsv"),sep="\t")
+
+
+##### ----- Load data ----------------------------------------------------------
+
+
+### --- Only non-enriched & with enough malignant cells
+BCB_names <- c("BCB112","BCB139",
+               "BCB66","BCB20")
+Malignant_sce_lst <- lapply(BCB_names, 
+                             function(bcb){
+                               loadSCE(paste0(bcb,"_"), 
+                                       paste0(matrix_dir,bcb),
+                                       ALL_COLDATA)})
+names(Malignant_sce_lst) <- BCB_names
+
+
+### --- Subset to non-immune
+malignant_cells <- ALL_COLDATA[(ALL_COLDATA$CellType_Fig3 == "Malignant") & (!(is.na(ALL_COLDATA$CellType_Fig3 ))),]$CellID
+Malignant_sce_lst <- lapply(Malignant_sce_lst, function(x){x[,x$CellID %in% malignant_cells]})
+
+
+### --- Scran normalise
+Malignant_sce_lst <- lapply(Malignant_sce_lst, function(x) {scranNorm(x)})
+
+
+
+### --- CHECK PER-PATIENT TSNES FOR MKI67 CLUSTERS LIKE PRIMARY DATA ----------
+
+
+library(ggRNA)
+plot_lst <- lapply(Malignant_sce_lst, 
+                   function(x){
+                     ggRNA::ggDIMRED(x, dimred="TSNE",colour_by="MKI67")+
+                       theme(legend.position="none")+theme_blank()
+                   })
+names(plot_lst) <- names(Malignant_sce_lst)
+cowplot::plot_grid(plotlist=plot_lst,ncol=2, labels = names(plot_lst))
+
+
+
+
+save(Malignant_sce_lst, file=paste0(data_dir, "Malignant_sce_lst.Rdata"))
+
+
+
+### --- NEW CLUSTERING ---------------------------------------
+
+
+Cluster_KNN <- function(sce_object, K){
+  sce_object <- sce_object[as.vector(rowSums(logcounts(sce_object)>0)>0),]
+  g <- buildSNNGraph(sce_object, k=K,  assay.type = "logcounts")
+  clust <- igraph::cluster_walktrap(g)$membership
+  sce_object[[paste0("Clust_Knn",K)]] <- as.vector(clust)
+  return(sce_object)
+}
+
+
+Malignant_sce_lst <- lapply(Malignant_sce_lst, function(sce_x){Cluster_KNN(sce_x,K=50)})
+
+#Malignant_sce_lst <- lapply(Malignant_sce_lst, function(sce_x){Cluster_KNN(sce_x,K=100)})
+
+
+
+### --- TSNE
+Malignant_sce_lst <- lapply(Malignant_sce_lst, function(x){scater::runTSNE(x)})
+
+
+
+save(Malignant_sce_lst, file=paste0(data_dir, "Malignant_sce_lst.Rdata"))
+
+
+rm(Malignant_sce_lst)
+gc()
+
+
+### --- CLUSTERING ALL TOGETHER ---------------------------------------
+
+library(Seurat)
+seurat_lst <-  lapply(Malignant_sce_lst, function(x){Seurat::as.Seurat(x)})
+features <- Seurat::SelectIntegrationFeatures(object.list = seurat_lst,nfeatures=3000)
+enrich.anchors <- Seurat::FindIntegrationAnchors(object.list = seurat_lst, anchor.features = features)
+obj.combined <- Seurat::IntegrateData(anchorset = enrich.anchors)
+
+MPE_malignant_merged_sce <- Seurat::as.SingleCellExperiment(obj.combined)
+MPE_malignant_merged_sce <- scater::runTSNE(MPE_malignant_merged_sce)
+
+# k = c(50,80,100)
+g <- buildSNNGraph(MPE_malignant_merged_sce, k=80)
+clust <- igraph::cluster_walktrap(g)$membership
+MPE_malignant_merged_sce$ClusterKNN80_merged <- as.character(as.vector(clust))
+
+save(MPE_malignant_merged_sce, file=paste0(data_dir, "MPE_malignant_merged_sce.Rdata"))
+
+### --- Add metdata
+#ALL_COLDATA  <- read.table(file=paste0(data_dir,"ALL_COLDATA.tsv"),sep="\t")
+
+#PatientClusters <- unlist(lapply(Non_immune_sce_lst, function(x){x$Clust_Knn20}))
+#names(PatientClusters) <- unlist(lapply(Non_immune_sce_lst, function(x){x$CellID}))
+
+#ALL_COLDATA$ClusterKNN_patient <- as.vector(PatientClusters[ALL_COLDATA$CellID])
+#write.table(ALL_COLDATA , file=paste0(data_dir,"ALL_COLDATA.tsv"),sep="\t")
+
+A <- plotReducedDim(MPE_malignant_merged_sce, dimred="TSNE",colour_by = "ClusterKNN50_merged")
+B <- plotReducedDim(MPE_malignant_merged_sce, dimred="TSNE",colour_by = "ClusterKNN80_merged")
+C <- plotReducedDim(MPE_malignant_merged_sce, dimred="TSNE",colour_by = "ClusterKNN100_merged")
+cowplot::plot_grid(A+theme(legend.position = "none"),B+theme(legend.position = "none"),C+theme(legend.position = "none"),nrow=1)
+
+##### ----- Load Primary data ----------------------------------------------------------
+
+ER_metadata<- read.table("/stornext/Home/data/allstaff/w/whitfield.h/data/_datasets/sc/Smyth_HumanBrCa/ERmalignant_metadata.tsv", sep="\t")
+
+load(file="/stornext/Home/data/allstaff/w/whitfield.h/data_load/sc_datasets/smyth_sce_4patientsALL.RData")
+
+library(data.table)
+genes_dt = fread("/stornext/Home/data/allstaff/w/whitfield.h/data/_datasets/sc/Smyth_HumanBrCa/features.tsv.gz", header=FALSE)
+geneID_dict <- setNames(genes_dt$V2, genes_dt$V1)
+
+rowData(smyth_sce)$ENSEMBL <- rownames(smyth_sce)
+rowData(smyth_sce)$SYMBOL <- as.vector(geneID_dict[rowData(smyth_sce)$ENSEMBL])
+smyth_sce <- smyth_sce[!(duplicated(rowData(smyth_sce)$SYMBOL)), ]
+rownames(smyth_sce) <- rowData(smyth_sce)$SYMBOL
+
+

@@ -1,0 +1,381 @@
+######################################################################################################
+##
+##  FUNCTIONS FOR PLOTTING SINGLE-CELL RNASEQ DATA 
+##
+
+## --- By calling: 
+# source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/scfunc/scInstall.R")
+# source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/scfunc/scPlot.R", chdir=TRUE)
+
+
+source("./scWrangle.R")
+source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/Rfunc/Sankey.R")
+source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/Rfunc/Colours.R")
+source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/Rfunc/simpleHeatmap.R")
+
+
+requiredPackages <- c("gridExtra")
+for (pkg in requiredPackages){
+  if (!(require(pkg, quietly=TRUE, character.only = T))){
+    install.packages(pkg)
+    suppressWarnings(suppressMessages(library(pkg, character.only = T)))
+  } else {
+    suppressWarnings(suppressMessages(library(pkg, character.only = T)))
+  }
+}
+
+# if pseudobulk = TRUE,QuickPseudoBulk()
+
+
+## --- THEMES
+
+rl=1.1
+PlainBar_theme <- theme(legend.text = element_text(size = rel(rl)),
+                        legend.title = element_text(size = rel(rl)*0.8, face = 'bold'),
+                        legend.position = 'bottom',
+                        panel.border = element_rect(colour = NA),
+                        panel.grid.minor = element_blank(),
+                        panel.grid.major = element_blank(),
+                        axis.text.y = element_blank(), axis.text.x = element_blank(), 
+                        axis.line.y = element_blank(),axis.line.x = element_blank(),
+                        axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+                        axis.title.y =element_blank(),  axis.title.x=element_blank(),
+                        legend.spacing = unit(0.1, 'cm'),
+                        legend.margin=margin(0,0,0,0),legend.box.spacing= unit(0, 'cm'),
+                        legend.box.margin=margin(-15,-5,-5,-5))
+
+
+
+## --- PLOTS
+
+PropBar <- function(sce_obj, label_str, colour_dict, SAVE_PATH=NULL, rl=1.1){
+  props <- GetProps(sce_obj, label_str)
+  
+  props$label <- rownames(props)
+  props$Sample <- rep("Samples", length(rownames(props)))
+  props <- props[,!(colnames(props) == "Freq")]
+  props <- props[order(-props$Proportion),]
+  props$label <- factor(props$label, levels=rev(unique(props$label)))
+  
+  PropBar <- ggplot(props, aes(x = Sample, y=Proportion, fill=label)) + geom_bar(position="dodge", stat="identity") + 
+    geom_bar(stat = "identity")+xlab("\nSample") +ylab("\nLabel Proportion") +
+    scale_fill_manual(values=colour_dict, breaks=props$label)+ coord_flip()+theme_bw()+
+    scale_y_continuous(expand = c(0, 0), limits = c(0,100))+PlainBar_theme+ labs(fill = label_str)+
+    theme(legend.text = element_text(size = rel(rl)*1.3), legend.text.align = 0.5, legend.title.align = 0.5, legend.spacing.x = unit(0.2, 'cm'),
+          legend.box.spacing= unit(0.1, 'cm'))
+  
+  if (is.null(SAVE_PATH)){
+    return(PropBar)
+  } else {
+    png(SAVE_PATH, width=700, height=700)
+    PropBar
+    dev.off()
+  }
+}
+
+PropBar_2d <- function(sce_obj, label_str, group_str, colour_dict, 
+                       label_ordering=NULL, group_ordering=NULL,
+                       facet_str=NULL, facet_ordering=NULL,
+                       tick_gap=2000, bar_labels=FALSE,
+                       SAVE_PATH=NULL, WIDTH=1800, HEIGHT=2000, RES=220, rl=1.1){
+  if (bar_labels){
+    bar_theme <- theme(legend.position = "none",plot.margin=unit(c(0,0,0.45,0), "cm"),
+                       axis.title.y =element_blank(),axis.ticks.y=element_blank())
+  } else {
+    bar_theme <- theme(legend.position = "none",plot.margin=unit(c(0,0,0.45,0), "cm"),
+                       axis.title.y =element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank())
+  }
+  
+  ## Get props
+  props <- GetProps_perPatient(sce_obj, label_str, group_str)
+  props$label <- rownames(props)
+  
+  ## Get ordering
+  if (is.null(label_ordering)){
+    label_ordering = props$label
+  }
+
+  props <- props[order(factor(props$label, levels=rev(unique(label_ordering)))),]
+  props <- reshape2::melt(props, id.vars="label", value.name="Proportion", variable.name="group")
+
+  if (is.null(group_ordering)){
+    group_ordering = unique(props$group)
+  }
+  if (is.null(facet_ordering)){
+    facet_ordering = unique(props$group)
+  }
+  
+  ## Add cell number info
+  SampleNumbs_dict <- unlist(lapply(unique(props$group), function(x)  {ncol(sce_obj[,sce_obj[[group_str]] == x])}))
+  names(SampleNumbs_dict) <- unique(props$group)
+  props$CellNumb <- as.vector(SampleNumbs_dict[as.vector(props$group)])
+  
+  ## Fix ordering
+  props$label <- factor(props$label, levels=rev(label_ordering)) 
+  props$group <- factor(props$group, levels=rev(group_ordering))
+  
+  ## Get cell number
+  cellNumb <- props[!(duplicated(props$group)),colnames(props) %in% c("group", "CellNumb")]
+  cellNumb$CellNumb <- as.numeric(cellNumb$CellNumb)
+  
+  ## Add facet label
+  if (!(is.null(facet_str))){
+    facet_dict <- sce_obj[[facet_str]]
+    names(facet_dict) <- sce_obj[[group_str]]
+    facet_dict <- facet_dict[!(duplicated(names(facet_dict)))]
+    props$facet_label <- factor(as.vector(facet_dict[as.vector(props$group)]), levels=rev(facet_ordering))
+    cellNumb$facet_label <- factor(as.vector(facet_dict[as.vector(cellNumb$group)]), levels=rev(facet_ordering))
+  }
+  
+  ## Get cell number
+  cellNumb_bar <- ggplot(data=cellNumb, aes(x=group, y=CellNumb)) + 
+    geom_bar(stat="identity", position="dodge", width=0.93,  fill="dimgrey")+coord_flip()+theme_bw()+PlainBar_theme
+  
+  ## Get prop bar
+  PropBar_pp <- ggplot(props, aes(x=group, y=Proportion, fill=label)) + 
+    geom_bar(stat = "identity", position = "stack", width=0.95) +
+    xlab(paste0("\n", group_str)) +ylab("\nLabel Proportion") +
+    scale_fill_manual(values=colour_dict, breaks=label_ordering)+theme_bw()+  coord_flip()+
+    scale_y_discrete(limits =label_ordering)+
+    # scale_x_continuous(limits=c(0,100))+
+    PlainBar_theme+ labs(fill = label_str)+
+    theme(axis.title.y =element_blank(), axis.text.y  = element_text(hjust=0.5, size = rel(rl)), legend.position = "bottom",
+          legend.text = element_text(size = rel(rl)*1.1), legend.text.align = 0.5, legend.title.align = 0.5, legend.spacing.x = unit(0.2, 'cm'),
+          legend.box.spacing= unit(0.1, 'cm'))
+  legend <- cowplot::get_legend(PropBar_pp)
+  
+  ## FACET
+  if (!(is.null(facet_str))){
+    cellNumb_bar <- cellNumb_bar + facet_grid(rows=vars(facet_label), scales="free", space="free_y")+theme(strip.text.y = element_text(size = rel(rl)*2.2))
+    PropBar_pp <- PropBar_pp + facet_grid(rows=vars(facet_label), scales="free", space="free_y")+
+      theme(strip.background = element_blank(), strip.text = element_blank())
+  }
+  
+  ## SET BREAKS
+  if (ceiling(max(cellNumb$CellNumb)/2000) > 5){
+    n_ticks = ceiling(max(cellNumb$CellNumb)/5000)
+    gap=5000
+  } else {
+    n_ticks = ceiling(max(cellNumb$CellNumb)/tick_gap)
+    gap=tick_gap
+  }
+  break_vec <- seq(0, gap*n_ticks, gap)
+  if (gap > 1000){
+    break_labs <- gsub("0{3}$","k",break_vec)
+  } else {
+    break_labs = break_vec
+  }
+  
+  ## PLOT
+  if (is.null(SAVE_PATH)){
+    return(grid.arrange(grobs=list(PropBar_pp+bar_theme, 
+                                   cellNumb_bar+
+                                     theme(axis.title.y =element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank(), 
+                                           axis.ticks.x=element_line(), axis.line.x=element_line(), 
+                                           axis.text.x=element_text(size = rel(rl)*1.2,  hjust=0.8),  # angle = 285, vjust = 0.5, hjust=1
+                                           plot.margin=unit(c(0,0,0,0), "cm"))+
+                                     scale_y_continuous(labels=break_labs, limits=c(0, max(break_vec)),breaks = break_vec), legend), 
+                        ncol=2, nrow=2, heights=c(6,1), 
+                        widths = c(5,1)))
+  } else {
+    png(SAVE_PATH, width=WIDTH, height=HEIGHT, res=RES)
+    grid.arrange(grobs=list(PropBar_pp+bar_theme, 
+                            cellNumb_bar+
+                              theme(axis.title.y =element_blank(),axis.text.y=element_blank(),axis.ticks.y=element_blank(), 
+                                    axis.ticks.x=element_line(), axis.line.x=element_line(), 
+                                    axis.text.x=element_text(size = rel(rl)*1.2,  hjust=0.8),  # angle = 285, vjust = 0.5, hjust=1
+                                    plot.margin=unit(c(0,0,0,0), "cm"))+
+                              scale_y_continuous(labels=break_labs, limits=c(0, max(break_vec)),breaks = break_vec), legend), 
+                 ncol=2, nrow=2, heights=c(6,1), 
+                 widths = c(5,1))
+    dev.off()
+  }
+}
+
+
+## --- TSNEs
+
+PlotTSNE <- function(sce_object, ColourBy, Colour_dict, dim_label="TSNE", ColourBy_str=NA, leg_nrow=3, 
+                     rl=1.1, SAVE_PATH=NA, PointAlpha=0.8,PointSize=1.7, discrete=TRUE, scale_lims=c(0,3)){
+  
+  if (is.na(ColourBy_str)){
+    ColourBy_str = ColourBy
+  }
+  
+  if (discrete){
+    tsne <- plotReducedDim(sce_object, dimred=dim_label, colour_by=ColourBy,point_alpha=PointAlpha, point_size=PointSize)+theme_bw()+
+      scale_fill_manual(values=Colour_dict)+
+      scale_colour_manual(values=Colour_dict)+
+      theme(legend.text = element_text(size = rel(rl)*1.1),
+            legend.title = element_text(size = rel(rl)*1.3, face = 'bold'),
+            legend.position = 'bottom',panel.border = element_rect(colour = NA), legend.text.align=0.5,
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            axis.text.y = element_blank(), axis.text.x = element_blank(), 
+            axis.line.y = element_blank(),axis.line.x = element_blank(),
+            axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+            axis.title.y =element_blank(),  axis.title.x=element_blank(),legend.box.margin=margin(0,0,0,0),
+            legend.spacing = unit(0.1, 'cm'))+ labs(fill = ColourBy_str) 
+    
+    tsne$layers[[1]]$aes_params$colour = NULL
+    tsne$layers[[1]]$mapping$`colour` <- tsne$layers[[1]]$mapping$`fill`
+    tsne <- tsne + guides(fill=guide_legend(nrow=leg_nrow,byrow=TRUE, override.aes = list(size=4)), color = FALSE)
+  } else {
+    
+    tsne <- plotReducedDim(sce_object, dimred=dim_label, colour_by=ColourBy, point_alpha=PointAlpha, point_size=PointSize)+
+      theme_bw()+scale_fill_viridis_c(limits=scale_lims)+
+      theme(legend.text = element_text(size = rel(rl)*1.1),
+            legend.title = element_text(size = rel(rl)*1.3, hjust=0.5, vjust=1),
+            legend.position = 'bottom',panel.border = element_rect(colour = NA), legend.text.align=0.5,
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            plot.title = element_text(size=rel(rl)*2, face='bold'),
+            axis.text.y = element_blank(), axis.text.x = element_blank(), 
+            axis.line.y = element_blank(),axis.line.x = element_blank(),
+            axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+            axis.title.y =element_blank(),  axis.title.x=element_blank(),legend.box.margin=margin(0,0,0,0),
+            legend.spacing = unit(0, 'cm'))+ labs(fill = ColourBy_str) +
+      guides(fill=guide_colourbar(barwidth = 20, barheight = 0.5))
+  }
+  
+  if (is.na(SAVE_PATH)){
+    return(tsne)
+  } else {
+    png(SAVE_PATH,width = 2000, height = 2000, res=200)  #units="in", res=1000
+    tsne
+    dev.off()
+  }
+  
+}
+
+
+PlotTSNE_multi <- function(sce_obj_lst, ColourBy, Colour_dict, dim_label="TSNE", ColourBy_str=NA, 
+                           leg_nrow=3, plot_ncol=2, rl=1.1, 
+                           SAVE_PATH=NA, WIDTH=1500, HEIGHT=2300, RES=200,
+                           PointAlpha=0.8,PointSize=1.7, discrete=TRUE, LabelOrdering=NULL){
+  if (is.null(names(sce_obj_lst))){
+    names(sce_obj_lst) <- 1:length(sce_obj_lst)
+  }
+  
+  if (is.na(ColourBy_str)){
+    ColourBy_str = ColourBy
+  }
+  
+  plot_lst <- list()
+  for (i_name in names(sce_obj_lst)){
+    sce_obj <- sce_obj_lst[[i_name]]
+    
+    if (discrete){
+      tsne <- plotReducedDim(x, dimred="TSNE", colour_by="AIMS_crisp", point_alpha=PointAlpha, point_size=PointSize)+
+        theme_bw()+scale_fill_manual(values=Colour_dict)+scale_colour_manual(values=Colour_dict)+
+        theme(legend.text = element_text(size = rel(rl)),
+              legend.title = element_text(size = rel(rl), face = 'bold'),
+              legend.position = 'none',panel.border = element_rect(colour = NA), legend.text.align=0.5,
+              panel.grid.minor = element_blank(),
+              panel.grid.major = element_blank(),
+              axis.text.y = element_blank(), axis.text.x = element_blank(), 
+              axis.line.y = element_blank(),axis.line.x = element_blank(),
+              axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+              axis.title.y =element_blank(),  axis.title.x=element_blank(),
+              legend.spacing = unit(0.1, 'cm'))+ labs(fill = ColourBy_str)+
+        guides(color = guide_legend(override.aes = list(size = 2)))
+      tsne$layers[[1]]$aes_params$colour = NULL
+      tsne$layers[[1]]$mapping$`colour` <- tsne$layers[[1]]$mapping$`fill`
+      tsne <- tsne + guides(fill=guide_legend(nrow=leg_nrow,byrow=TRUE, override.aes = list(size=4)), color = FALSE)
+      plot_lst[[i_name]] <- tsne +ggtitle(i_name)
+    } else {
+      tsne <- plotReducedDim(sce_object, dimred=dim_label, colour_by=ColourBy, point_alpha=PointAlpha, point_size=PointSize)+
+        theme_bw()+scale_fill_viridis_c()+
+        theme(legend.text = element_text(size = rel(rl)*1.1),
+              legend.title = element_text(size = rel(rl)*1.3, hjust=0.5, vjust=1),
+              legend.position = 'bottom',panel.border = element_rect(colour = NA), legend.text.align=0.5,
+              panel.grid.minor = element_blank(),
+              panel.grid.major = element_blank(),
+              plot.title = element_text(size=rel(rl)*2, face='bold'),
+              axis.text.y = element_blank(), axis.text.x = element_blank(), 
+              axis.line.y = element_blank(),axis.line.x = element_blank(),
+              axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+              axis.title.y =element_blank(),  axis.title.x=element_blank(),legend.box.margin=margin(0,0,0,0),
+              legend.spacing = unit(0, 'cm'))+ labs(fill = ColourBy_str) +
+        guides(fill=guide_colourbar(barwidth = 20, barheight = 0.5))
+      plot_lst[[i_name]] <- tsne +ggtitle(i_name)
+    }
+    
+  }
+  
+  if (!(is.null(LabelOrdering))){
+    plot_lst <- plot_lst[LabelOrdering]
+  }
+  
+  my_grobs <- lapply(plot_lst, ggplotGrob)
+  
+  if (is.na(SAVE_PATH)){
+    return(grid.arrange(grobs=my_grobs, ncol=plot_ncol, padding = unit(-50, "points")))
+  } else {
+    png(SAVE_PATH,width = WIDTH, height = HEIGHT, res=RES)  #units="in", res=1000
+    grid.arrange(grobs=my_grobs, ncol=plot_ncol, padding = unit(-50, "points"))
+    dev.off()
+  }
+  
+}
+
+
+TSNE_wPropBar <- function(sce_object, ColourBy, Colour_dict, dim_label="TSNE", ColourBy_str=NA, leg_nrow=3, 
+                          rl=1.1, SAVE_PATH=NA,WIDTH=1500, HEIGHT=2300, RES=200, PointAlpha=0.8,PointSize=1.7){
+  
+  if (is.na(ColourBy_str)){
+    ColourBy_str = ColourBy
+  }
+  
+  ## --- TSNE
+  tsne <- plotReducedDim(sce_object, dimred=dim_label, colour_by=ColourBy,point_alpha=PointAlpha, point_size=PointSize)+theme_bw()+
+    scale_fill_manual(values=Colour_dict)+
+    scale_colour_manual(values=Colour_dict)+
+    theme(legend.text = element_text(size = rel(rl)*1.1),
+          legend.title = element_text(size = rel(rl)*1.3, face = 'bold'),
+          legend.position = 'bottom',panel.border = element_rect(colour = NA), legend.text.align=0.5,
+          panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          axis.text.y = element_blank(), axis.text.x = element_blank(), 
+          axis.line.y = element_blank(),axis.line.x = element_blank(),
+          axis.ticks.y=element_blank(), axis.ticks.x=element_blank(),
+          axis.title.y =element_blank(),  axis.title.x=element_blank(),legend.box.margin=margin(0,0,0,0),
+          legend.spacing = unit(0.1, 'cm'))+ labs(fill = ColourBy_str) 
+  
+  tsne$layers[[1]]$aes_params$colour = NULL
+  tsne$layers[[1]]$mapping$`colour` <- tsne$layers[[1]]$mapping$`fill`
+  tsne <- tsne + guides(fill=guide_legend(nrow=leg_nrow,byrow=TRUE, override.aes = list(size=4)), color = FALSE)
+  
+  ## --- PROP BAR
+  props <- GetProps(sce_obj, label_str)
+  
+  props$label <- rownames(props)
+  props$Sample <- rep("Samples", length(rownames(props)))
+  props <- props[,!(colnames(props) == "Freq")]
+  props <- props[order(-props$Proportion),]
+  props$label <- factor(props$label, levels=rev(unique(props$label)))
+  
+  PropBar <- ggplot(props, aes(x = Sample, y=Proportion, fill=label)) + geom_bar(position="dodge", stat="identity") + 
+    geom_bar(stat = "identity")+xlab("\nSample") +ylab("\nLabel Proportion") +
+    scale_fill_manual(values=colour_dict, breaks=props$label)+ coord_flip()+theme_bw()+
+    scale_y_continuous(expand = c(0, 0), limits = c(0,100))+PlainBar_theme+ labs(fill = label_str)+
+    theme(legend.text = element_text(size = rel(rl)*1.3), legend.text.align = 0.5, legend.title.align = 0.5, legend.spacing.x = unit(0.2, 'cm'),
+          legend.box.spacing= unit(0.1, 'cm'))
+  legend <- get_legend(PropBar)
+  
+  
+  ## --- RETURN OR SAVE
+  if (is.na(SAVE_PATH)){
+    return(grid.arrange(grobs=list(tsne+theme(legend.position = "none", plot.margin=unit(c(1,1,-0.6,1), "cm")), 
+                                   PropBar+theme(plot.margin=unit(c(-0.6,1,1,1), "cm"))),
+                        ncol=1, nrow=2, 
+                        widths = 1, heights=c(7, 1)))
+  } else {
+    png(SAVE_PATH,width = WIDTH, height = HEIGHT, res=RES)  #units="in", res=1000
+    grid.arrange(grobs=list(tsne+theme(legend.position = "none", plot.margin=unit(c(1,1,-0.6,1), "cm")), 
+                            PropBar+theme(plot.margin=unit(c(-0.6,1,1,1), "cm"))),
+                 ncol=1, nrow=2, 
+                 widths = 1, heights=c(7, 1))
+    dev.off()
+  }
+}

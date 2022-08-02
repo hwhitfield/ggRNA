@@ -1,0 +1,63 @@
+######################################################################################################
+##
+##  LOAD SCFUNC SCRIPTS
+##
+##
+
+## --- By calling: 
+# source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/scfunc/scfunc.R", chdir=TRUE)
+
+source("./scInstall.R")
+
+source("./scQC.R")
+source("./scProcess.R")
+
+source("./scSigs.R")
+
+source("./scPlot.R")
+
+
+## --- Helper functions
+CheckInput <- function(obj, requiredClass="SingleCellExperiment", 
+                       requiredAttributes=NA, dat_assays=NA, requriedDimRed=NA){
+  
+  if (requiredClass == "SingleCellExperiment"){
+    if (class(dat_obj)[1] == "Seurat"){
+      obj <- Seurat2SCE(obj, dat_count=dat_assays)
+    }
+    if (!is.na(requiredAttributes)){
+      missingCols <- setdiff(requiredAttributes, colnames(colData(obj)))
+      if (length(missingCols) > 0){
+        message("Missing the following colData:")
+        message(missingCols)
+      }
+    }
+    if (!is.na(requriedDimRed)){
+      missingDimReds <- setdiff(requriedDimRed, reducedDimNames(obj))
+      if (length(missingDimReds) > 0){
+        message("Running the following missing DimReds:")
+        message(missingDimReds)
+        if ("TSNE" %in% missingDimReds){
+          obj <- runTSNE(obj, exprs_values = "logcounts")
+        }
+        if ("PCA" %in% missingDimReds){
+          obj <- runPCA(obj, exprs_values = "logcounts")
+        }
+        if ("UMAP" %in% missingDimReds){
+          obj <- runUMAP(obj, exprs_values = "logcounts")
+        }
+      }
+    }
+  }
+  
+}
+
+
+Seurat2SCE <- function(seurat_obj, dat_count="raw"){
+  if (dat_count == "raw"){
+    return(SingleCellExperiment(assays=list(counts=as.matrix(GetAssayData(seurat_obj, "data")))))
+  } else if (dat_count == "logcounts"){
+    return(SingleCellExperiment(assays=list(logcounts=as.matrix(GetAssayData(seurat_obj, "data")))))
+  }
+}
+

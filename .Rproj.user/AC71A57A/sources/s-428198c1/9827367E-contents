@@ -1,0 +1,97 @@
+
+library(scfunc)
+library(ggRNA)
+
+
+requiredPackages <- c("cowplot", "ggplot2", "SingleCellExperiment", "scater","scran", "gridExtra")
+
+for (pkg in requiredPackages){
+  suppressWarnings(suppressMessages(library(pkg, character.only = T)))
+}
+
+SAVEDATA_DIR <- "/stornext/Home/data/allstaff/w/whitfield.h/PhD_Project_MPE/Data/"
+OUTPUT_FIGURE_DIR <- "/stornext/Home/data/allstaff/w/whitfield.h/PhD_Project_MPE/Output/ReviewerComments/fig3/"
+
+
+### COLOURS ------------
+
+Colour_values_PatientID <- c("#077187", "#6AAAB7", "#8E2043", "#BC7A8F", 
+                             "#FEA090","#FECFC7", "#3E5496", "#0A9086", 
+                             "#E0607E", "#E1D164")
+names(Colour_values_PatientID) <- c("BCB66","BCB66_E", "BCB20","BCB20_E", "BCB21", 
+                                    "BCB21_E", "BCB112",  "BCB139",  "BCB90",  "BCB114")
+
+Colour_values <- c("#9e5476", "#d18b79",  "#70a18f",
+                   "#e7ebbc",
+                   "#8bbde6", "#6074ab", 
+                   "grey")
+
+names(Colour_values) <- c("Malignant", "Mesothelial",  "Myeloid",  
+                          "B_cells",
+                          "NK_cells", "T_cells",
+                          "Unassigned")
+
+Colour_values_PAM50 <- c("#CABEE9", "#7C7189", "#FAE093", "#D04E59", "#2F3D70")
+names(Colour_values_PAM50) <- c( "LumA", "LumB", "Her2","Normal", "Basal")
+
+
+
+
+
+### LOAD DATA ------------
+load(file=paste(SAVEDATA_DIR,"MegaBCB_EpiCAF.Rdata", sep="")) # MegaBCB_EpiCAF
+
+
+
+### INTEGRATE DATA ------------
+#load(file=paste(SAVEDATA_DIR,"MegaBCB_EpiCAF.Rdata", sep="")) # MegaBCB_EpiCAF
+#MegaBCB_EpiCAF$CellType_refined <- replace(MegaBCB_EpiCAF$CellType_refined,
+#                                           MegaBCB_EpiCAF$CellType_refined == "BloodProg", "Unassigned")
+## -- Add chemistry version
+#SeqVers_dict <- c("ChemistryV3","ChemistryV3",  "ChemistryV3",  "ChemistryV3", "ChemistryV3", "ChemistryV2", "ChemistryV2", "ChemistryV2")
+#names(SeqVers_dict) <- c("BCB139",  "BCB112","BCB21",  "BCB66", "BCB20", "BCB21_E",  "BCB66_E", "BCB20_E")
+#MegaBCB_EpiCAF$ChemV <- as.vector(SeqVers_dict[MegaBCB_EpiCAF$PatientID])
+
+#EpiCAF_sce <- scfunc::SeuratIntegrate(MegaBCB_EpiCAF, split_col = "ChemV")
+#altExp(MegaBCB_EpiCAF, "merged") <- EpiCAF_sce
+#save(MegaBCB_EpiCAF,file=paste(SAVEDATA_DIR,"MegaBCB_EpiCAF.Rdata", sep=""))
+
+
+
+##### ----- FIG 3A  ------------------------------------
+alph =0.7
+
+A1 <- ggDIMRED(MegaBCB_EpiCAF, dimred="TSNE", colour_by = "ChemV",point_alpha =alph)
+B1 <- ggDIMRED(MegaBCB_EpiCAF, dimred="TSNE", colour_by = "CellType_refined",col_pal = Colour_values,point_alpha =alph)
+C1 <- ggDIMRED(MegaBCB_EpiCAF, dimred="TSNE", colour_by = "PatientID",col_pal = Colour_values_PatientID,point_alpha =alph)
+D1 <- ggDIMRED(MegaBCB_EpiCAF, dimred="TSNE", colour_by = "AIMS_crisp",col_pal = Colour_values_PAM50,point_alpha =alph)
+
+
+cowplot::plot_grid(A1,B1, C1, D1, ncol=2)
+
+EpiCAF_sce <- altExp(MegaBCB_EpiCAF, "merged") 
+A <- ggDIMRED(EpiCAF_sce, dimred="TSNE", colour_by = "ChemV",point_alpha =alph)
+B <- ggDIMRED(EpiCAF_sce, dimred="TSNE", colour_by = "CellType_refined",col_pal = Colour_values,point_alpha =alph)
+C <- ggDIMRED(EpiCAF_sce, dimred="TSNE", colour_by = "PatientID",col_pal = Colour_values_PatientID,point_alpha =alph)
+D <- ggDIMRED(EpiCAF_sce, dimred="TSNE", colour_by = "AIMS_crisp",col_pal = Colour_values_PAM50,point_alpha =alph)
+
+cowplot::plot_grid(A, C, ncol=2)
+
+cowplot::plot_grid(A,B, C, D, ncol=2)
+
+
+png(paste0(OUTPUT_FIGURE_DIR, "MegatSNE_ChemVers.png", ""),width = 2000, height = 2000, res=200)  #units="in", res=1000
+A+theme_blank()
+dev.off()
+
+png(paste0(OUTPUT_FIGURE_DIR, "MegatSNE_EpiCAF.png", ""),width = 2000, height = 2000, res=200)  #units="in", res=1000
+B+theme_blank()
+dev.off()
+
+png(paste0(OUTPUT_FIGURE_DIR, "MegatSNE_AIMS_crisp.png", ""),width = 2000, height = 2000, res=200)  #units="in", res=1000
+D+theme_blank()
+dev.off()
+
+png(paste0(OUTPUT_FIGURE_DIR, "MegatSNE_PatientID.png", ""),width = 2000, height = 2000, res=200)  #units="in", res=1000
+C+theme_blank()
+dev.off()

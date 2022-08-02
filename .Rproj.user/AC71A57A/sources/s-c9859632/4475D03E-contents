@@ -1,0 +1,7 @@
+#' @import SingleCellExperiment
+#' @import scran
+#' @import scater
+#' @importFrom Matrix t which colSums rowSums
+
+
+NULL

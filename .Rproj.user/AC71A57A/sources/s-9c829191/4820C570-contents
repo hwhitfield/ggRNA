@@ -1,0 +1,1466 @@
+######################################################################################################
+##
+##  FUNCTIONS FOR PROCESSING & ANALYSING LEGO DATA
+##
+
+
+library(biomaRt)
+library(edgeR)
+suppressMessages(library(RUVSeq))
+library(org.Hs.eg.db)
+library(readxl)
+
+
+##### ----- PROCESSING --------------------------------------------
+
+
+GetGeneAnnotations <- function(DGE_Object, GeneLengths, ensembl=NULL){
+  
+  if (is.null(ensembl)){
+    ensembl <- useEnsembl(biomart='ENSEMBL_MART_ENSEMBL', dataset="hsapiens_gene_ensembl", host="https://oct2018.archive.ensembl.org")
+    
+  }
+  
+  annot <- biomaRt::getBM(attributes=c('ensembl_gene_id','version', 'external_gene_name',  'gene_biotype','entrezgene', 'hgnc_symbol'), mart = ensembl)
+  
+  idx <- match(rownames(DGE_Object), annot$ensembl_gene_id)
+  DGE_Object <- DGE_Object[which(!is.na(idx)),]
+  GeneLengths <- GeneLengths[which(!is.na(idx))]
+  idx <- idx[!is.na(idx)] 
+  DGE_Object$genes <- annot[idx,] 
+  
+  rownames(DGE_Object$genes) <- DGE_Object$genes$ensembl_gene_id
+  
+  ### Include gene lengths
+  DGE_Object$genes$Length <- GeneLengths
+  return(DGE_Object)
+}
+
+Process_LEGO_scoredata <- function(DATA_DIR, DATA_SAVE_DIR){
+  LEGO_DGE <- LoadLEGO(DIR=DATA_DIR, RT=FALSE, groups="organ")
+  LEGO_DGE_RT <- LoadLEGO(DIR=DATA_DIR, RT=TRUE, groups="clone")
+  LEGO_DAT <- cbind(LEGO_DGE$counts, LEGO_DGE_RT$counts)
+  mets <- ifelse(grepl("Tum",colnames(LEGO_DAT)), "Tumour", "Met")
+  organ_factor <- factor(replace(replace(mets, grepl("Lung",colnames(LEGO_DAT)), "Lung"), 
+                                 grepl("Live",colnames(LEGO_DAT)), "Liver"))
+  LEGO_DGE_ALL <- DGEList(cbind(LEGO_DGE$counts, LEGO_DGE_RT$counts), group=organ_factor)
+  all(LEGO_DGE_RT$gene_lengths == LEGO_DGE$gene_lengths)
+  LEGO_DGE_ALL$gene_lengths <- LEGO_DGE$gene_lengths
+  
+  ## --- Sum technical replicates
+  Replicates <- c('Ms245_Liver_02000_87K_S4', 'Ms245_Liver_10340_150K_S3', 'Ms245_Liver_10340_150K_S3', 'Ms245_Liver_10340_150K_S3', 
+                  'Ms245_Lung_02000_48K_S2', 'Ms245_Lung_10340_85K_S1', 'Ms245_Lung_10340_85K_S1', 'Ms245_Lung_10340_85K_S1', 
+                  "Ms245_Tumour_10340_180k_S3", "Ms245_Tumour_02000_100K_S8", "Ms245_Tumour_10340_180k_S3", "Ms245_Tumour_10340_180k_S3",
+                  
+                  'Ms247_Liver_02000_8k_S13', 'Ms247_Liver_10340_220k_S12', 'Ms247_Lungs_02000_24k_S11', 'Ms247_Lungs_10340_120k_S10', 
+                  "Ms247_Tumour_02000_55k_S9", "Ms247_Tumour_10340_62k_S8",
+                  
+                  'Ms319_Liver_02000_10K_S12', 'Ms_319_Liver_10340_30K_S11', 'Ms319_Lungs_02000_11K_S10', '1Ms319_Lungs_10340_14K_S9',
+                  "Ms319_Tum_02000_27K_S13", "MS_319_Tum_10340_37K_S14",
+                  "Ms446_Liver_clone_02_300k_S9", "Ms446_Lungs_clone_02_300k_S8",
+                  "Ms447_Liver_clone_02_300k_S5", "Ms447_Lungs_clone_02_300k_S4",
+                  "Ms448_Liver_clone_02_300k_S6", "Ms448_Lungs_clone_02_300k_S7")
+  LEGO_DGE_ALL_rep <- sumTechReps(LEGO_DGE_ALL, Replicates)
+  
+  ## --- Get Annotations
+  LEGO_DGE_ALL_rep <- GetGeneAnnotations(LEGO_DGE_ALL_rep, LEGO_DGE_ALL_rep$gene_lengths)
+  
+  ## --- Process counts
+  LEGO_DGE_organ <- ProcessLEGO(LEGO_DGE_ALL_rep, main_factor="organ")
+  LEGO_DGE_clone <- ProcessLEGO(LEGO_DGE_ALL_rep, main_factor="clone")
+  
+  
+  save(LEGO_DGE_clone,LEGO_DGE_organ,
+       file=paste0(DATA_SAVE_DIR, "LEGO_DGE.Rdata"))
+}
+
+LoadLEGO <- function(DIR="W:\\PhD_Project_1\\Data\\", RT=FALSE, groups="organ"){
+  
+  
+  if (RT){
+    file_name = "LEGO_Data_RETRANS_2PASS.txt"
+    max_n = 30
+    file_n = 8
+    mice_to_keep = c("446","447", "448")
+    Remove_Samples=NA
+    groups="organ"
+  } else {
+    file_name =  "LEGO_Data_ALL_2PASS.txt"
+    max_n = 35
+    file_n = 10
+    mice_to_keep = c("245","247", "319")
+    Remove_Samples <- c("Ms245_LN_02000_12K_S6", "Ms245_LN_10340_130K_S5", "Ms245_LN_10340_130k_S5_V2",
+                        "MDAMB231_leGO5C_100cpop_02000_8k_S7", "MDAMB231_leGO5C_100cpop_10340_8k_S4", "MDAMB231_leGO5C_100cpop_S2")
+  }
+  
+  LEGO_Data <- read.table(paste0(DIR,file_name), sep="\t", header=TRUE, skip = 1, row.names = 1)
+  GeneLengths <- LEGO_Data$Length
+  LEGO_Data <- LEGO_Data[,6:max_n]
+  # fix column names
+  x <- strsplit(colnames(LEGO_Data), "[.]")
+  new_cols = list()
+  for(i in 1:length(x)){
+    getStringNo2 <- length(x[[i]])-3  # minus 3 for fastqAligned.out.bam to get run number
+    getStringNo1 <- file_n  # minus info about file location
+    new_cols[i] <- paste(x[[i]][getStringNo1:getStringNo2], collapse="_")
+  }
+  new_cols <- unlist(new_cols)
+  colnames(LEGO_Data) <- new_cols
+  
+  ### --- Filter samples
+  if (!(is.na(Remove_Samples))){
+    LEGO_Data <- LEGO_Data[ , -which(names(LEGO_Data) %in% Remove_Samples)]
+  }
+  
+  to_keep <- colnames(LEGO_Data)[grepl(paste(mice_to_keep, collapse = "|"), colnames(LEGO_Data))]
+  LEGO_Data <- LEGO_Data[, colnames(LEGO_Data) %in% to_keep]
+  
+  ### --- Make DGE
+  if (groups=="organ"){
+    mets <- ifelse(grepl("Tum",colnames(LEGO_Data)), "Tumour", "Met")
+    organ_factor <- factor(replace(replace(mets, grepl("Lung",colnames(LEGO_Data)), "Lung"), 
+                                   grepl("Live",colnames(LEGO_Data)), "Liver"))
+    LEGO_DGE <- DGEList(LEGO_Data, group=organ_factor)
+  } else if (groups=="clone"){
+    clone_factor <- factor(ifelse(grepl("02000",colnames(LEGO_Data)), "c2", "c13"))
+    LEGO_DGE <- DGEList(LEGO_Data, group=clone_factor)
+  } else if (is.na(groups)){
+    LEGO_DGE <- DGEList(LEGO_Data)
+  }
+  
+  LEGO_DGE$gene_lengths <- GeneLengths
+  
+  return(LEGO_DGE)
+}
+
+ProcessLEGO <- function(LEGO_DGE, main_factor="organ"){
+  
+  mouse_dict <- c("M1", "M2", "M3","M3","M3", "M3","M4", "M5", "M6")
+  names(mouse_dict) <- c("Ms245","Ms247", "Ms319","1Ms319", "Ms","MS", "Ms446","Ms447", "Ms448")
+  
+  ### --- Design matrix
+  mouse_factor <- factor(unlist(lapply(strsplit(colnames(LEGO_DGE), "_"), 
+                                       function(x){as.vector(mouse_dict[x[[1]]])})))
+  clone_factor <- factor(ifelse(grepl("10340",colnames(LEGO_DGE)), "c13", "c2"))
+  mets <- ifelse(grepl("Tum",colnames(LEGO_DGE)), "Tumour", "Met")
+  organ_factor <- factor(replace(
+    replace(mets, grepl("Lung",colnames(LEGO_DGE)), "Lung"), 
+    grepl("Live",colnames(LEGO_DGE)), "Liver"))
+  
+  if (main_factor ==  "organ"){
+    design_mat <- model.matrix( ~0 + organ_factor + clone_factor + mouse_factor)
+    design_to_preserve <- model.matrix( ~0 + organ_factor + clone_factor)
+  } else if (main_factor ==  "clone"){
+    design_mat <- model.matrix( ~0 + clone_factor + organ_factor + mouse_factor)
+    design_to_preserve <- model.matrix( ~0 + clone_factor + organ_factor)
+  } else if (main_factor ==  "interaction"){
+    Interactions <- factor(paste0(as.vector(clone_factor), ".", as.vector(organ_factor)))
+    design_mat <- model.matrix( ~0 + Interactions + mouse_factor)
+    design_to_preserve <- model.matrix( ~0 + Interactions)
+  } else if (main_factor ==  "RT"){
+    design_mat <- model.matrix( ~0 + organ_factor +  mouse_factor)
+    design_to_preserve <- model.matrix( ~0 + organ_factor)
+  } else {
+    message("Assuming main factor is organ")
+    design_mat <- model.matrix( ~0 + organ_factor + clone_factor + mouse_factor)
+    design_to_preserve <- model.matrix( ~0 + organ_factor + clone_factor)
+  }
+  
+  LEGO_DGE$design <- design_mat
+  LEGO_DGE$samples$organ <- organ_factor
+  LEGO_DGE$samples$clone <- clone_factor
+  LEGO_DGE$samples$mouse <- mouse_factor
+  LEGO_DGE$samples$sample <- paste0(LEGO_DGE$samples$organ, "_", LEGO_DGE$samples$clone)
+  
+  
+  ### --- Gene Filtering
+  LEGO_DGE <- LEGO_DGE[filterByExpr(LEGO_DGE, design=design_mat), keep.lib.sizes=FALSE] 
+  
+  ### --- Calculate Factors & Dispersions
+  LEGO_DGE <- calcNormFactors(LEGO_DGE)  # normalise by library size
+  LEGO_DGE <- estimateDisp(LEGO_DGE, design_mat, robust = TRUE)
+  
+  ### --- Batch correction
+  BATCHCORRECTED_DATA <- removeBatchEffect(cpm(LEGO_DGE, log=TRUE, prior.count = 2), 
+                                           design = design_to_preserve,  batch=mouse_factor)
+  LEGO_DGE$batch_corrected <- BATCHCORRECTED_DATA
+  
+  ### --- RPKM/CPM
+  LEGO_DGE$RPKM <- rpkm(LEGO_DGE, gene.length=LEGO_DGE$genes$Length)
+  LEGO_DGE$logRPKM <- rpkm(LEGO_DGE, log=TRUE, prior.count = 1, gene.length=LEGO_DGE$genes$Length)
+  LEGO_DGE$logCPM <- cpm(LEGO_DGE, log=TRUE, prior.count = 1)
+  
+  return(LEGO_DGE)
+}
+
+Get_nosumTechRep <- function(DIR_x, ensembl_x, group_x="organ"){
+  DGE_x <- LoadLEGO(DIR=DIR_x, RT=FALSE, groups=group_x)
+  DGE_x <- GetGeneAnnotations(DGE_x, DGE_x$gene_lengths, ensembl_x)
+  DGE_x <- DGE_x[!(grepl("MT-|RPS|RPL|RRP",DGE_x$genes$hgnc_symbol)),]
+  DGE_x <- ProcessLEGO(DGE_x, main_factor=group_x)
+  colnames(DGE_x$counts) <- DGE_x$samples$sample
+  
+  ## TechRep info
+  DGE_x$samples$techRep <- replace(rownames(DGE_x$samples), rownames(DGE_x$samples) %in% c("Ms245_Liver_10340_150K_S3", "Ms245_Lung_10340_85K_S1", "Ms245_Tumour_10340_180K_S7"), "Rep1")
+  DGE_x$samples$techRep <- replace(DGE_x$samples$techRep,DGE_x$samples$techRep %in% c("Ms245_Liver_10340_150k_S3_V2", "Ms245_Lung_10340_85k_S1_V2", "Ms245_Tumour_10340_180k_S6_V2"),"Rep2")
+  DGE_x$samples$techRep <- replace(DGE_x$samples$techRep,DGE_x$samples$techRep %in% c("Ms245_Liver_10340_150k_S2", "Ms245_Lung_10340_85k_S1_V3", "Ms245_Tum_10340_180k_S3"),"Rep3")
+  DGE_x$samples$techRep <- replace(DGE_x$samples$techRep,!(DGE_x$samples$techRep %in% c("Rep1", "Rep2", "Rep3")),"noRep")
+  DGE_x$samples$techRep <- factor(DGE_x$samples$techRep, levels=c("Rep1", "Rep2", "Rep3", "noRep"))
+  return(DGE_x)
+}
+
+ProcessBROCADE <- function(DATA_DIR){
+  
+  BROCADE_RAW <- read.table(paste(DATA_DIR, "BROCADE_Data_ALL_2PASS.txt", sep=""), sep="\t", header=TRUE, row.names = 1)
+  GeneLengths_BROCADE <- BROCADE_RAW$Length
+  BROCADE_METADATA <- read.csv(paste(DATA_DIR, "BROCADE_MetaData.csv", sep=""), sep=",", header=TRUE, row.names=1)
+  
+  BROCADE_RAW <- BROCADE_RAW[,6:31]     
+  # fix column names
+  x <- strsplit(colnames(BROCADE_RAW), "[.]")
+  new_cols = list()
+  for(i in 1:length(x)){
+    getStringNo2 <- length(x[[i]])-3  # minus 3 for fastqAligned.out.bam to get run number
+    getStringNo1 <- 9  # minus info about file location
+    new_cols[i] <- paste(x[[i]][getStringNo1:getStringNo2], collapse="_")
+  }
+  new_cols <- unlist(new_cols)
+  colnames(BROCADE_RAW) <- new_cols
+  
+  ## Exclude patient 1 for now
+  BROCADE_METADATA <- BROCADE_METADATA[1:19,]
+  BROCADE_RAW <- BROCADE_RAW[,8:26] 
+  
+  BROCADE_LL <- BROCADE_RAW[, -c(6, 7, 12, 18, 19)]
+  BROCADE_Excl <- BROCADE_LL[, !(names(BROCADE_LL) %in% c("PMA_1909_Liver_Nb31_S5", "PMA_1908_Liver_2_S8", "PMA_1908_Liver_1_Dig_Dep_S5"))]
+  BROCADE_METADATA_LL <- BROCADE_METADATA[-c(6, 7, 12, 18, 19),]
+  BROCADE_METADATA_Excl <- BROCADE_METADATA_LL[!(rownames(BROCADE_METADATA_LL) %in% c("PMA_1909_Liver_Nb31_S5", "PMA_1908_Liver_2_S8", "PMA_1908_Liver_1_Dig_Dep_S5")),]
+  
+  ## Design matrix
+  ## Organ
+  Organs_X.factor <- factor(BROCADE_METADATA_Excl$Organ)
+  Organs_X <- as.vector(BROCADE_METADATA_Excl$Organ)
+  ## Patient
+  Patient_X.factor <- factor(BROCADE_METADATA_Excl$PatientNo.)
+  Patient_X <- as.vector(BROCADE_METADATA_Excl$PatientNo.)
+  design_X  <- model.matrix( ~0 + Organs_X.factor + Patient_X.factor + Organs_X.factor:Patient_X.factor) 
+  
+  ## EdgeR Processing
+#  DGE_Object_LL <- EdgeRProcessing(BROCADE_LL, Patient_LL, design_LL, GeneLengths_BROCADE)
+  BROCADE_DGE <- DGEList(BROCADE_Excl, group=Organs_X.factor)
+  BROCADE_DGE <- GetGeneAnnotations(BROCADE_DGE, GeneLengths_BROCADE)
+  
+  ## Manual filtering
+  keep <- rowSums(cpm(BROCADE_DGE) > 0.5) >= 4
+  BROCADE_DGE <- BROCADE_DGE[keep, , keep.lib.sizes=FALSE]
+  
+  ## Norm
+  BROCADE_DGE <- calcNormFactors(BROCADE_DGE) 
+  BROCADE_DGE <- estimateDisp(BROCADE_DGE, design_X, robust = TRUE)
+  
+  ## Fix up names
+  BROCADE_DGE$samples$patient <- Patient_X
+  BROCADE_DGE$samples$organ <- Organs_X
+  x <- as.vector(rownames(BROCADE_DGE$samples))
+  Samplenumb <- substring(x, nchar(x)-2, nchar(x))
+  Samplenumb <- gsub("_", "", Samplenumb)
+  colnames(BROCADE_DGE) <- paste0(paste0(as.vector(Patient_X.factor), "_",  as.vector(Organs_X.factor)), "_", Samplenumb)
+  BROCADE_DGE$samples$sample <- paste0(paste0(as.vector(Patient_X.factor), "_",  as.vector(Organs_X.factor)), "_", Samplenumb)
+ 
+  ## Correct batch/patient
+  design_to_preserve <- model.matrix( ~0 + Organs_X.factor)
+  BROCADE_DGE$batch_corrected <- removeBatchEffect(cpm(BROCADE_DGE, log=TRUE, prior.count = 1), design = design_to_preserve, batch=Patient_X.factor)
+  
+  ## Normalise
+  BROCADE_DGE$logCPM <- cpm(BROCADE_DGE$counts, log=TRUE, prior.count = 1)
+  BROCADE_DGE$logRPKM <- rpkm(BROCADE_DGE$counts,  gene.length=BROCADE_DGE$genes$Length, log=TRUE, prior.count = 1)
+  
+  save(BROCADE_DGE, file=paste0(DATA_DIR, "BROCADE_DGE.Rdata"))
+}
+
+PerformDE_QLF <- function(DGE_Object, design_mat, contrast_vec=c(), coef_n=NULL){
+  
+  qfit <- glmQLFit(DGE_Object, design_mat)
+  
+  if (!(is.null(coef_n))){
+    message(paste0("Using coef: ",coef_n) )
+    DE_obj <- glmQLFTest(qfit, coef=coef_n)
+  } else {
+    message(paste0("Using contrast: ",paste(contrast_vec, collapse=",")) )
+    DE_obj <- glmQLFTest(qfit, contrast=contrast_vec) 
+  }
+  
+  DE_results <- decideTestsDGE(DE_obj, adjust.method="BH")
+  print(summary(DE_results))
+  
+  return(DE_obj)
+}
+
+##### ----- ENRICHMENT ANALYSES --------------------------------------------
+
+
+getEnrichedTerms <- function(DE_obj, top_n=100,
+                             id_str ="entrezgene",
+                             G0_ont = c('BP', "CC", "MF")){
+  
+  ### use goana & kegga & camera....
+  # WHY CAN'T YOU USE GO OR KEGG WITH CAMERA??
+  GOEnrich <- goana(DE_obj, species="Hs", 
+                    geneid=DE_obj$genes[[id_str]], FDR=0.05)
+  
+  enrich_term_lst <- list()
+  for (x_ont in G0_ont){
+    top_x <- topGO(GOEnrich, n=top_n, ontology=x_ont)
+    top_x_up <- top_x[((top_x$P.Up<0.05) & (top_x$P.Down>0.05)),]
+    top_x_dn <- top_x[((top_x$P.Down<0.05) & (top_x$P.Up>0.05)),]
+    
+    enrich_term_lst[[paste0("GO_",x_ont,"_up")]] <- setNames(top_x_up$Term, rownames(top_x_up))
+    enrich_term_lst[[paste0("GO_",x_ont,"_dn")]] <- setNames(top_x_dn$Term, rownames(top_x_dn))
+  }
+  
+  KEGGEnrich <- kegga(DE_obj, species="Hs", 
+                      geneid=DE_obj$genes[[id_str]], FDR=0.05)
+  top_kegg <- topKEGG(KEGGEnrich, n=top_n)
+  
+  top_x_up <- top_kegg[((top_kegg$P.Up<0.05) & (top_kegg$P.Down>0.05)),]
+  top_x_dn <- top_kegg[((top_kegg$P.Down<0.05) & (top_kegg$P.Up>0.05)),]
+  enrich_term_lst$KEGG_up <- setNames(top_x_up$Pathway, rownames(top_x_up))
+  enrich_term_lst$KEGG_dn <- setNames(top_x_dn$Pathway, rownames(top_x_dn))
+  
+  return(enrich_term_lst)
+}
+
+getKEGGmart <- function(kegg_lst){
+    kegg_mart <- getGeneKEGGLinks("hsa", convert=TRUE)
+    kegg_mart <- kegg_mart[(kegg_mart$PathwayID %in% kegg_lst),]
+    return(kegg_mart)
+}
+  
+
+getGeneMembership_KEGG <- function(entrez_dict, kegg_lst_lst, kegg_mart){
+  
+  gene_to_kegg <- list()
+  
+  for (x_gene in names(entrez_dict)){
+    
+    entrez_x <- entrez_dict[[x_gene]]
+    
+    if (entrez_x %in% kegga$GeneID){
+      x_kegg_lst <- c()
+      for (i_lst in names(kegg_lst_lst)){
+        kegg_sub_lst <- names(kegg_lst_lst[[i_lst]])
+        x_kegg_lst[[i_lst]] <- kegga[(kegga$GeneID==as.character(entrez_x)) & (kegga$PathwayID %in% kegg_sub_lst),]$PathwayID
+      }
+      gene_to_kegg[[x_gene]] <- x_kegg_lst
+    } else{
+      gene_to_kegg[[x_gene]] <- NULL
+    }
+    }
+    return(gene_to_kegg)
+  }
+
+
+getGOmart <- function(gene_lst, term_lst, mart_obj,
+                      term_lst_lst =FALSE,
+                      id_type="hgnc_symbol"){
+ 
+   ## names of term_lst are GO ids
+  if (term_lst_lst){
+    term_lst = unique(unlist(lapply(term_lst, function(x){names(x)}), use.names = F))
+    term_lst = term_lst[grepl("GO:",term_lst)]
+  } else {
+    term_lst = names(term_lst)
+  }
+  
+  ## get terms from .obo
+  go_mart <- getBM(attributes= c("hgnc_symbol",'go_id'),
+                   filters=c("hgnc_symbol", "go"),
+                   values=list(hgnc_symbol=gene_lst,go_id=term_lst),
+                   mart=mart_obj)
+  go_mart <- go_mart[!(go_mart$hgnc_symbol==""),]
+  go_mart <- go_mart[go_mart$hgnc_symbol %in% gene_lst,]
+
+  return(go_mart)
+}
+
+getGeneMembership_GO <- function(gene_lst, term_lst, go_mart,
+                              term_lst_lst =FALSE){
+  gene_to_GO <- list()
+  
+  if(!(term_lst_lst)){
+    
+    for (x_gene in gene_lst){
+      if (!(x_gene %in% go_mart$hgnc_symbol)){
+        gene_to_GO[[x_gene]] <- NULL
+      } else {
+        gene_to_GO[[x_gene]] <- go_mart[(go_mart$hgnc_symbol==x_gene) & (go_mart$go_id %in% term_lst),]$go_id
+      }
+      
+    }
+    return(gene_to_GO)
+    
+  } else {
+    
+    for (x_gene in gene_lst){
+      
+      if (!(x_gene %in% go_mart$hgnc_symbol)){
+        gene_to_GO[[x_gene]] <- NULL
+      } else {
+        x_go_lst <- c()
+        for (i_lst in names(term_lst)){
+          go_sub_lst <- names(term_lst[[i_lst]])
+          x_go_lst[[i_lst]] <- go_mart[(go_mart$hgnc_symbol==x_gene) & (go_mart$go_id %in% go_sub_lst),]$go_id
+        }
+        gene_to_GO[[x_gene]] <- x_go_lst
+      }
+    }
+    return(gene_to_GO)
+  }
+  
+}
+
+
+
+##### ----- POST DE ANALYSIS --------------------------------------------
+
+
+calc_pca <- function(data, is.log, centre) {
+  ## Ramyar's
+  if(is.log == TRUE){
+    data <- data
+  }else{
+    data <- log2(data + 1)
+  }
+  svd <- svd(apply(data, 1, function(x) scale(x, scale = FALSE, center = centre)))
+  percent <- svd$d^2/sum(svd$d^2)*100
+  percent <- sapply(seq_along(percent), function(i) {round(percent[i], 2)})
+  return(list(sing.val = svd, var = percent))
+  
+  ## These are all the same PCA
+  # 1)
+  # PlotMyPCA(LEGO_DGE_ALL$batch_corrected, LEGO_DGE_ALL$samples$clone, "bottomright", "", LOG.str=TRUE)
+  # ^^ I think this one filters data by variance before running PCA ^^
+  # 2)
+  # pcs_ALL_t <- calc_pca(LEGO_DGE_ALL$batch_corrected, is.log=TRUE, centre=TRUE)
+  # plot(pcs_ALL_t$sing.val$u[,1], pcs_ALL_t$sing.val$u[,2])
+  # 3)
+  # pca<-prcomp(t(LEGO_DGE_ALL$batch_corrected))
+  # plot(as.data.frame(pca$x)$PC1, as.data.frame(pca$x)$PC2)
+}
+
+FilterDE <- function(DE_obj){
+  DE_obj <- topTags(DE_obj, n=Inf, p.value=0.05, adjust.method = "BH", sort.by = "PValue")
+  DE_obj <- DE_obj[DE_obj$table$FDR < 0.05 ,]
+  return(DE_obj)
+}
+
+GetPCweights <- function(DATA_t, PC="PC1", subset=c()){
+  # DATA_t should be transposed
+  pca <- prcomp(DATA_t)
+  geneweights <- as.data.frame(pca$rotation)
+  PCweights <- geneweights[[PC]]
+  names(PCweights) <- rownames(geneweights)
+  
+  if(length(subset)==0){
+    return(PCweights)
+  } else {
+    return(PCweights[subset])
+  }
+}
+
+
+dist2d <- function(a,b,c) {
+  v1 <- b - c
+  v2 <- a - b
+  m <- cbind(v1,v2)
+  d <- det(m)/sqrt(sum(v1*v1))
+  d
+}
+
+unit_scale <- function(x) {
+  a <- min(x) 
+  b <- max(x) 
+  (x - a)/(b - a) 
+}
+
+
+
+CalcElbow <- function(values_vec, decr=TRUE){
+  ## https://raghavan.usc.edu//papers/kneedle-simplex11.pdf
+  ## https://github.com/arvkevi/kneed/blob/master/kneed/knee_locator.py
+  
+  if (decr){
+    sign = -1
+  } else {
+    sign = 1
+  }
+  
+  ## Sort vector
+  values_vec <- sort(values_vec, decreasing = TRUE)
+  values_vec <- as.vector(values_vec)
+  
+  ## Unit scale
+  scaled_vec <- scale(values_vec)
+  unit_scaled_vec <- unit_scale(as.vector(scaled_vec))
+  
+  ## Calculate kneedle
+  start = c(1, unit_scaled_vec[1])
+  end = c(length(unit_scaled_vec), unit_scaled_vec[length(unit_scaled_vec)])
+  k <- which.max(lapply(1:length(unit_scaled_vec),
+                          function(idx) {
+                            sign * -1 * dist2d(c(idx, unit_scaled_vec[idx]),
+                                               start,
+                                               end)}))
+    return(values_vec[k])
+}
+
+RunEnrichment <- function(DE_obj, DGE_obj, genesets_lst, contrast_vec){
+  GOEnrich <- goana(DE_obj, species="Hs", geneid=DE_obj$genes$entrezgene)
+  KEGGEnrich <- kegga(DE_obj, species="Hs", geneid=DE_obj$genes$entrezgene)
+  idx_cam <- ids2indices(genesets_lst,id=DGE_obj$genes$hgnc_symbol)
+  cam <- camera(DGE_obj$counts, index=idx_cam, 
+                     design=DGE_obj$design, contrast=contrast_vec)
+  
+  print(topGO(GOEnrich, n=15, ontology="BP"))
+  print(topKEGG(KEGGEnrich, n=15, truncate=34))
+  options(digits=2)
+  print(head(cam,20))
+}
+
+compute_jaccard <- function(a,b){
+  intersection = length(intersect(a, b))
+  union = length(a) + length(b) - intersection
+  return (intersection/union)
+}
+
+geneset_jaccard <- function(geneset_lst, UP_lst, DN_lst){
+  up_scores <- c()
+  dn_scores <- c()
+  for (x_name in names(geneset_lst)){
+    up_scores <- c(up_scores, compute_jaccard(HM_genesets[[x_name]],UP_lst))
+    dn_scores <- c(dn_scores, compute_jaccard(HM_genesets[[x_name]],DN_lst))
+  }
+  return(data.frame(up_score=up_scores, dn_score=dn_scores, row.names=names(geneset_lst)))
+}
+
+
+##### ----- QC PLOTS --------------------------------------------
+
+BCV <- function(DGE_Object, DESIGN.modelmatrix){
+  #print("Ensure you have estimated dispersions on these data")
+  plotBCV(DGE_Object)
+  bcv_idx <- sqrt(DGE_Object$tagwise.dispersion) > 0.75 & DGE_Object$AveLogCPM> 4 
+  bcv_idx2 <- sqrt(DGE_Object$tagwise.dispersion) > 0.6 & DGE_Object$AveLogCPM > 3 
+  points(DGE_Object$AveLogCPM[bcv_idx2], sqrt(DGE_Object$tagwise.dispersion)[bcv_idx2], col="pink", cex = 1.3)
+  points(DGE_Object$AveLogCPM[bcv_idx], sqrt(DGE_Object$tagwise.dispersion)[bcv_idx], col="red", cex = 1.3) 
+  
+  summary(DGE_Object$tagwise.dispersion)
+  summary(DGE_Object$prior.df)
+  sqrt(DGE_Object$common.dispersion)
+}
+
+PlotPCA2Factor <- function(DATA, GROUP.vector, FACTOR2.vector, LEGENDLOC.str, LEGENDLOC2.str, TITLE.str, LOG.str=TRUE, col.pal = c(), K.int=2, CEX.int=1.5, LABEL.str=FALSE){
+  
+  ## Get colours
+  if (length(col.pal)>1){
+    GroupLength <- length(unique(GROUP.vector))
+  } else {
+    GroupLength <- length(unique(GROUP.vector))
+    col.pal <- brewer.pal(GroupLength,"Set1")
+  }
+  
+  if (LOG.str){
+    print("Assuming data is already log-transformed...")
+  } else {
+    print("Log-transforming data...")
+  }
+  
+  ## Get shapes
+  if (length(unique(FACTOR2.vector)) > 5){
+    pch_list <- c(21:25, 1:20)
+    pch_list <- pch_list[1:length(unique(FACTOR2.vector))]
+    names(pch_list) <- unique(FACTOR2.vector)
+  } else {
+    pch_list <- c(15, 17, 18, 19, 25)
+    pch_list <- pch_list[1:length(unique(FACTOR2.vector))]
+    names(pch_list) <- unique(FACTOR2.vector)
+  }
+  
+  #GROUP.vector <- relevel(as.factor(GROUP.vector), ref = 1) 
+  
+  if (K.int > 2){
+    par(mar=c(1, 1, 1, 1))
+    plotPCA(DATA, col=as.vector(col.pal[GROUP.vector]), main=TITLE.str, k=K.int, labels = LABEL.str, pch=pch_list[FACTOR2.vector], isLog=LOG.str, cex=CEX.int) 
+    legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 20,  col=col.pal[unique(GROUP.vector)], cex = 0.8, pt.cex=2)
+    legend(LEGENDLOC2.str, legend = names(pch_list),pch = pch_list[names(pch_list)], cex = 0.8, pt.cex=1.5)
+    
+  } else {
+    plotPCA(DATA, col=as.vector(col.pal[GROUP.vector]), main=TITLE.str, labels = LABEL.str, pch=pch_list[FACTOR2.vector], isLog=LOG.str, cex=CEX.int) 
+    legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 20,  col=col.pal[unique(GROUP.vector)], cex = 0.8, pt.cex=2)
+    legend(LEGENDLOC2.str, legend = names(pch_list),pch = pch_list[names(pch_list)], cex = 0.8, pt.cex=1.5)
+    
+  }
+  
+}
+
+
+PlotMyPCA <- function(DATA, GROUP.vector, LEGENDLOC.str, TITLE.str, LOG.str=TRUE, col.pal = c()){
+  # CountData <- newSeqExpressionSet(DGE_Object$counts, phenoData = data.frame(x = DGE_Object$samples$group, row.names =colnames(DGE_Object$counts)))
+  #  GROUP <- DGE_Object$samples$group
+  if (length(col.pal)>1){
+    GroupLength <- length(unique(GROUP.vector))
+  } else {
+    GroupLength <- length(unique(GROUP.vector))
+    col.pal <- brewer.pal(GroupLength,"Set1")
+  }
+  
+  
+  if (LOG.str){
+    print("Assuming data is already log-transformed...")
+  } else {
+    print("Log-transforming data...")
+  }
+  
+  # GROUP.vector <- relevel(as.factor(GROUP.vector), ref = 1)  
+  plotPCA(DATA, col=as.vector(col.pal[GROUP.vector]), main=TITLE.str, labels = FALSE, pch=19, isLog=LOG.str, cex=1.5) 
+  legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 19,  col=col.pal[unique(GROUP.vector)], cex = 1.5, pt.cex=2)
+  
+  ###????
+}
+
+
+PlotMDS <- function(DATA, GROUP.vector, LEGENDLOC.str, TITLE.str, col.pal = c(), DOT.str=FALSE, logCPM=TRUE, CEX.int=1){
+  #GROUP <- DGE_Object$samples$group
+  if (!(length(col.pal)>1)){
+    GroupLength <- length(unique(GROUP.vector))
+    col.pal <- brewer.pal(GroupLength,"Set1")
+  } 
+  
+  if (DOT.str){
+    PCH=20
+  } else {
+    PCH = NULL
+  }
+  
+  if (logCPM){
+    #GROUP.vector <- relevel(as.factor(GROUP.vector), ref = 1) 
+    plotMDS(cpm(DATA, prior.count =1, log =TRUE), col=as.vector(col.pal[GROUP.vector]), main=TITLE.str, pch=PCH,cex = CEX.int) 
+    legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 20,  col=as.vector(col.pal[unique(GROUP.vector)]), cex = 1, pt.cex=2)
+    
+  } else {
+    # GROUP.vector <- relevel(as.factor(GROUP.vector), ref = 1) 
+    plotMDS(DATA, col=as.vector(col.pal[GROUP.vector]), main=TITLE.str, pch=PCH, cex = CEX.int) 
+    legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 20,  col=as.vector(col.pal[unique(GROUP.vector)]), cex = 1, pt.cex=2)
+  }
+}
+
+
+PlotRLE <- function(DATA, GROUP.vector, LEGENDLOC.str, TITLE.str, col.pal = c()){
+  if (!(length(col.pal)>1)){
+    GroupLength <- length(unique(GROUP.vector))
+    col.pal <- brewer.pal(GroupLength,"Accent")
+  }
+  
+  #  CountData <- newSeqExpressionSet(DGE_Object$counts, phenoData = data.frame(x = GROUP.vector, row.names =colnames(DGE_Object$counts)))
+  GROUP.vector <- as.factor(GROUP.vector) 
+  
+  EDASeq::plotRLE(DATA, col= as.vector(col.pal[GROUP.vector]), main = TITLE.str, ylab="Log-ratios", outline = FALSE, las=2, cex.axis = 0.5) 
+  legend(LEGENDLOC.str, legend = unique(GROUP.vector), pch = 19,  col=col.pal[unique(GROUP.vector)], cex = 1.1)
+}
+
+
+
+##### ----- LOAD SCORING DATASETS --------------------------------------------
+
+ProcessBROCADE <- function(DIR="/stornext/Home/data/allstaff/w/whitfield.h/PhD_Project_1/Data/"){
+  BROCADE_RAW <- read.table(paste(DIR, "BROCADE_Data_ALL_2PASS.txt", sep=""), sep="\t", header=TRUE, row.names = 1)
+  BROCADE_METADATA <- read.csv(paste(DIR, "BROCADE_MetaData.csv", sep=""), sep=",", header=TRUE, row.names=1)
+  GeneLengths_BROCADE <- BROCADE_RAW$Length
+  BROCADE_RAW <- BROCADE_RAW[,6:31]     
+  # fix column names
+  x <- strsplit(colnames(BROCADE_RAW), "[.]")
+  new_cols = list()
+  for(i in 1:length(x)){
+    getStringNo2 <- length(x[[i]])-3  # minus 3 for fastqAligned.out.bam to get run number
+    getStringNo1 <- 9  # minus info about file location
+    new_cols[i] <- paste(x[[i]][getStringNo1:getStringNo2], collapse="_")
+  }
+  new_cols <- unlist(new_cols)
+  colnames(BROCADE_RAW) <- new_cols
+}
+
+
+ProcessGTExLL <- function(SAVE_PATH="/stornext/Home/data/allstaff/w/whitfield.h/BIG_DATA/GTEX/GTEx_DGE.Rdata",
+                          RDS_PATH="/stornext/Home/data/allstaff/w/whitfield.h/BIG_DATA/GTEX/GTEx_ESet_CountData.rds",
+                          gene_length_path="/stornext/Home/data/allstaff/w/whitfield.h/BIG_DATA/genomes/gene_lengths_HTSeq_gencodev38.Rdata"){
+  #GTEX_MATRIX <- exprs(GTEX)
+  #GTEX_phenoData <- phenoData(GTEX) # meta data fpr samples
+  ## sampleNames(GTEX_phenoData)
+  ## extract original pData with pData(GTEX_phenoData)
+  #GTEX_featureData <- featureData(GTEX) #meta data about eatures or tech used
+  #GTEX_experiment <- experimentData(GTEX) # describes experiment?
+  
+  GTEX <- readRDS(RDS_PATH)
+  GTEX_Lung <- GTEX[, GTEX$SMTS %in% c("Lung")]
+  GTEX_LUNG_MATRIX <- exprs(GTEX_Lung)
+  GTEX_Liver <- GTEX[, GTEX$SMTS %in% c("Liver")]
+  GTEX_LIVER_MATRIX <- exprs(GTEX_Liver)
+  
+  LUNG_vector <- rep("Lung", length(colnames(GTEX_LUNG_MATRIX)))
+  LIVER_vector <- rep("Liver", length(colnames(GTEX_LIVER_MATRIX)))
+  ORGAN_vector <- as.vector(c(LUNG_vector,LIVER_vector))
+  ORGAN_FACTOR <- factor(ORGAN_vector, levels=c('Lung','Liver'))
+  
+  ## Merge
+  DATA <- cbind(GTEX_LUNG_MATRIX, GTEX_LIVER_MATRIX)
+  tmp=gsub("\\..*","",row.names(DATA))
+  rownames(DATA) <- tmp
+  SampleNumb <- dim(DATA)[2]
+  
+  ## Make DGE
+  GTEx_DGE <- DGEList(DATA, group=ORGAN_vector) 
+  
+  ## Get gene annotations -- Gencode 38 is genelengths == GRCh38.p13 == ENSEMBL 104 -- AH89426
+  library(AnnotationHub) # x$genome[grepl("GRCh38.p12", x$genome)]
+  ensdb <- AnnotationHub()[["AH89426"]]
+  hgnc_names <- mapIds(ensdb, 
+                       keys=rownames(GTEx_DGE),
+                       keytype="GENEID", column="SYMBOL")
+  entrez_names <- mapIds(ensdb,
+                         keys=rownames(GTEx_DGE),
+                         keytype="GENEID", columns=c("ENTREZID", "SYMBOL")) 
+  GTEx_DGE$genes <- data.frame(ensemblID=names(hgnc_names), hgncID=as.vector(hgnc_names), entrezID=as.vector(entrez_names))
+  
+  ## Filter by expression
+  keep <- rowSums(cpm(GTEx_DGE) > 1) >= 0.3*SampleNumb
+  GTEx_DGE <- GTEx_DGE[keep, , keep.lib.sizes=FALSE]
+  
+  ## Get gene lengths for RPKM
+  load(file=gene_length_path)
+  idx <- match(rownames(GTEx_DGE), gene_lengths$ensembl_gene_id)
+  GTEx_DGE <- GTEx_DGE[which(!is.na(idx)),]
+  GeneLengths <- gene_lengths[which(!is.na(idx)),]$gene_length
+  GTEx_DGE$genes$GeneLength <- GeneLengths
+  
+  ## Process DGE
+  GTEx_DGE <- calcNormFactors(GTEx_DGE)
+  
+  GTEx_DGE$rpkm <- rpkm(GTEx_DGE, gene.length = GTEx_DGE$genes$GeneLength, normalized.lib.sizes = TRUE)
+  GTEx_DGE$logCPM <- cpm(GTEx_DGE, log=TRUE, prior.count = 1)
+  
+  save(GTEx_DGE, file=SAVE_PATH)
+  
+}
+
+ProcessCCLE <- function(SAVE_PATH ="/stornext/Home/data/allstaff/w/whitfield.h/BIG_DATA/CCLE/CCLE_DGE.Rdata",
+                        CCLE_DIR="/stornext/Home/data/allstaff/w/whitfield.h/BIG_DATA/CCLE/CCLE_RNAseq_genes_counts_20180929.gct",
+                        GENE_LENGTH_PATH ="/stornext/Home/data/allstaff/w/whitfield.h/BIG_DATA/Biomart/BiomartAnnotations.txt"){
+  
+  CCLE_2 <- read.csv(file=CCLE_DIR, 
+                     header=FALSE, sep="\t", skip=2, row.names=1)
+  
+  ### CCLE
+  CCLE <- read.csv(file=CCLE_DIR, header=TRUE, sep="\t", skip=2, row.names=1)
+  colnames(CCLE) <- as.character(unlist(CCLE_2[1,]))
+ # CCLE <- CCLE[-1, ]
+  GeneNumb <- dim(CCLE)[1]
+  
+ # CCLE <- CCLE[!grepl("MT-|RPS|RPL|RRP", CCLE$Description),]
+  
+  ## Lost 200 genes to replicated SYMBOL ids
+  CCLE <- CCLE[!duplicated(CCLE[c("Description")]),]
+  rownames(CCLE) <- CCLE$Description
+  drops <- c("Description")
+  CCLE <- CCLE[ , !(names(CCLE) %in% drops)]
+  
+  ### Filter genes by expression -- CPM>1 in more than 20%
+  SampleNumb <- dim(CCLE)[2]
+  MinKeep <- 0.2*SampleNumb
+  keep <- rowSums(cpm(CCLE) > 0.5) >= MinKeep
+  CCLE <- CCLE[keep, ]
+  
+  ## Biomart annotations -- get gene lengths
+  GetGeneLengths = read.csv(GENE_LENGTH_PATH, header=TRUE,  row.names = 1)
+  idx <- match(rownames(CCLE), GetGeneLengths$hgnc_symbol)
+  CCLE <- CCLE[which(!is.na(idx)),]
+  idx <- idx[!is.na(idx)] 
+  GetGeneLengths <- GetGeneLengths[idx,] 
+  GeneLengths <- GetGeneLengths$Length
+  
+  ## Make object
+  CCLE_DGE <- DGEList(CCLE)
+  CCLE_DGE$logRPKM <- rpkm(CCLE, gene.length=GeneLengths, log=TRUE)
+  
+  save(CCLE_DGE, file=SAVE_PATH)
+  
+}
+
+FilterTCGAscores_brca <- function(plot_df,singscore_df,
+                                  TCGA_DIR="/stornext/Home/data/allstaff/w/whitfield.h/data_load/"){
+   ## Get data
+  Sample_type_dict <- c("LUNG","LUNG","LUNG","LUNG","LUNG", 
+                        "LIVER","LIVER","LIVER", 
+                        "BREAST", "BREAST")
+  names(Sample_type_dict) <- c("LUNG","Lung","lung","lung adenocarcinoma","lung squamous cell carcinoma",
+                               "LIVER","Liver","liver hepatocellular carcinoma", 
+                               "BREAST","breast invasive carcinoma")
+  
+  cancers_to_keep <- c("breast invasive carcinoma","cervical & endocervical cancer","colon adenocarcinoma", "esophageal carcinoma",
+                       "kidney clear cell carcinoma", "kidney papillary cell carcinoma", "liver hepatocellular carcinoma",
+                       "lung adenocarcinoma", "lung squamous cell carcinoma", "mesothelioma", " ovarian serous cystadenocarcinoma",
+                       "pancreatic adenocarcinoma", "prostate adenocarcinoma", "rectum adenocarcinoma",
+                       "skin cutaneous melanoma", "stomach adenocarcinoma", "uterine corpus endometrioid carcinoma")
+  
+  tcga_colnames <- unique(singscore_df[singscore_df$Dataset=="TCGA",]$Sample)
+  
+  # tcga_metadata <- read.table(paste0(TCGA_DIR,"clinical_data.txt"), sep="\t", header=TRUE)
+  #save(tcga_logRPKM, tcga_metadata, file=paste0(TCGA_DIR,"tcga_logRPKM.RData"))
+  
+  load(file=paste0(TCGA_DIR,"tcga_logRPKM.RData")) # tcga_logRPKM, tcga_metadata
+  colnames(tcga_logRPKM) <- gsub("[.]", "-", colnames(tcga_logRPKM))
+  colnames(tcga_logRPKM) <- gsub('.{1}$', '',unlist(lapply(strsplit(colnames(tcga_logRPKM), "-"), function(x){paste(x[1:4], collapse="-")})))
+  
+  tcga_metadata <- tcga_metadata[tcga_metadata$X_primary_disease %in% cancers_to_keep,]
+  tcga_metadata <- tcga_metadata[tcga_metadata$sample_type %in% c("Primary Tumor", "Metastatic"),]
+  
+  tcga_logRPKM <- tcga_logRPKM[,colnames(tcga_logRPKM) %in% tcga_metadata$sampleID]
+  
+  
+  met_dict <- setNames(tcga_metadata$sample_type,tcga_metadata$sampleID)[tcga_colnames]
+  NonMets <- names(met_dict[met_dict=="Primary Tumor"])
+  mets_tcga <- ifelse(colnames(tcga_logRPKM) %in% NonMets, "PRIMARY", "MET")
+  
+  
+  ## Get annot
+  tcga_annot <- read.table(file="/stornext/Home/data/allstaff/w/whitfield.h/data/TCGA/BrCa/clinical_data", header=T, sep="\t")
+  tcga_annot_brca <- tcga_annot[!(tcga_annot$PAM50_mRNA_nature2012==""),]
+  tcga_annot_brca <- tcga_annot_brca[tcga_annot_brca$sampleID %in% colnames(tcga_logRPKM),]
+  
+  ## Filter plot data
+  plot_df_brca=plot_df[plot_df$CancerType=="BREAST",]
+  plot_df_brca = plot_df_brca[plot_df_brca$Sample %in% tcga_annot_brca$sampleID,]
+  plot_df_brca$Subtype <- as.vector(setNames(tcga_annot_brca$PAM50_mRNA_nature2012, tcga_annot_brca$sampleID)[plot_df_brca$Sample])
+  plot_df_brca <- plot_df_brca[!(plot_df_brca$Subtype=="Normal-like"),] ## only 32/2072 so dropped them
+  return(plot_df_brca)
+}
+
+LoadTCGAscores <- function(singscore_df, 
+                           SIGS_vec=c("LUNG", "LIVER", "Lung_Landemaine", "Lung_Minn"),
+                           TCGA_DIR="/stornext/Home/data/allstaff/w/whitfield.h/data_load/"){
+  
+  Sample_type_dict <- c("LUNG","LUNG","LUNG","LUNG","LUNG", 
+                        "LIVER","LIVER","LIVER", 
+                        "BREAST", "BREAST")
+  names(Sample_type_dict) <- c("LUNG","Lung","lung","lung adenocarcinoma","lung squamous cell carcinoma",
+                               "LIVER","Liver","liver hepatocellular carcinoma", 
+                               "BREAST","breast invasive carcinoma")
+  
+  cancers_to_keep <- c("breast invasive carcinoma","cervical & endocervical cancer","colon adenocarcinoma", "esophageal carcinoma",
+                       "kidney clear cell carcinoma", "kidney papillary cell carcinoma", "liver hepatocellular carcinoma",
+                       "lung adenocarcinoma", "lung squamous cell carcinoma", "mesothelioma", " ovarian serous cystadenocarcinoma",
+                       "pancreatic adenocarcinoma", "prostate adenocarcinoma", "rectum adenocarcinoma",
+                       "skin cutaneous melanoma", "stomach adenocarcinoma", "uterine corpus endometrioid carcinoma")
+  
+  tcga_colnames <- unique(singscore_df[singscore_df$Dataset=="TCGA",]$Sample)
+  
+  # tcga_metadata <- read.table(paste0(TCGA_DIR,"clinical_data.txt"), sep="\t", header=TRUE)
+  #save(tcga_logRPKM, tcga_metadata, file=paste0(TCGA_DIR,"tcga_logRPKM.RData"))
+  
+  load(file=paste0(TCGA_DIR,"tcga_logRPKM.RData")) # tcga_logRPKM, tcga_metadata
+  colnames(tcga_logRPKM) <- gsub("[.]", "-", colnames(tcga_logRPKM))
+  colnames(tcga_logRPKM) <- gsub('.{1}$', '',unlist(lapply(strsplit(colnames(tcga_logRPKM), "-"), function(x){paste(x[1:4], collapse="-")})))
+  
+  tcga_metadata <- tcga_metadata[tcga_metadata$X_primary_disease %in% cancers_to_keep,]
+  tcga_metadata <- tcga_metadata[tcga_metadata$sample_type %in% c("Primary Tumor", "Metastatic"),]
+  
+  tcga_logRPKM <- tcga_logRPKM[,colnames(tcga_logRPKM) %in% tcga_metadata$sampleID]
+  
+  
+  met_dict <- setNames(tcga_metadata$sample_type,tcga_metadata$sampleID)[tcga_colnames]
+  NonMets <- names(met_dict[met_dict=="Primary Tumor"])
+  mets_tcga <- ifelse(colnames(tcga_logRPKM) %in% NonMets, "PRIMARY", "MET")
+  
+  CancerType_tcga <- setNames(tcga_metadata$X_primary_disease, tcga_metadata$sampleID)
+  TissueOrigin_tcga <- setNames(tcga_metadata$X_anatomical_origin, tcga_metadata$sampleID)
+  
+  ALL_singscores_tcga <- singscore_df[(singscore_df$Dataset=="TCGA") & 
+                                        (singscore_df$Sample %in% tcga_metadata$sampleID),]
+  ALL_singscores_tcga$Type <- as.vector(met_dict[ALL_singscores_tcga$Sample])
+  
+  score_x <- ALL_singscores_tcga[(ALL_singscores_tcga$Sig %in% SIGS_vec) & (ALL_singscores_tcga$Sample %in% NonMets ),]
+  score_x$Sample_type <- as.vector(Sample_type_dict[score_x$Sample_type])
+  score_x$Sample_type <- replace(score_x$Sample_type, is.na(score_x$Sample_type), "OTHER CARCINOMA")
+  
+  score_x_agg_long=aggregate(score_x$Score,by=list(Sample=score_x$Sample,Sig=score_x$Sig),data=score_x,FUN=mean)
+  colnames(score_x_agg_long) <- c(colnames(score_x_agg_long)[1:2], "Score")
+  
+  score_x_agg_long$Type <- as.vector(met_dict[score_x_agg_long$Sample])
+  score_x_agg_long$Cancer <- as.vector(CancerType_tcga[score_x_agg_long$Sample])
+  score_x_agg_long$CancerType <- as.vector(Sample_type_dict[as.vector(CancerType_tcga[score_x_agg_long$Sample])])
+  score_x_agg_long$TissueOrigin <- toupper(as.vector(TissueOrigin_tcga[score_x_agg_long$Sample]))
+  score_x_agg_long$CancerType <- replace(score_x_agg_long$CancerType, is.na(score_x_agg_long$CancerType), "OTHER CARCINOMA")
+  
+  score_x_agg_long <- score_x_agg_long[(score_x_agg_long$Type == "Primary Tumor"),]
+  
+  return(score_x_agg_long)
+}
+
+LoadCCLEscores <- function(singscore_df, return="BRCA",
+                           SIGS_vec=c("LUNG", "LIVER", "Lung_Landemaine", "Lung_Minn"),
+                           CCLE_DIR="/stornext/Home/data/allstaff/w/whitfield.h/data_load/"){
+  
+  ## Dicts
+  cellLines_to_keep <- c("BREAST", "COLORECTAL", "ENDOMETRIUM", "LUNG_NSC", "LUNG", "LIVER", "LUNG_SMALL_CELL",
+                         "MELANOMA", "MESOTHELIOMA", "OVARY", "STOMACH", "PANCREAS", "URINARY_TRACT", "UPPER_AERODIGESTIVE",
+                         "KIDNEY", "ESOPHAGUS", "GLIOMA", "FIBROBLAST", "NEUROBLASTOMA", "SOFT_TISSUE", "CERVIX", "BILE_DUCT")
+  
+  ccle_metadata <- read.csv2("/stornext/Home/data/allstaff/w/whitfield.h/data/CCLE/METADATA.csv", sep=",", header=TRUE, row.names = 1)
+  ccle_metadata$CancerType <- replace(ccle_metadata$CancerType, ccle_metadata$CancerType %in% 
+                                        c("LUNG_NSC", "LUNG_SMALL_CELL"), "LUNG")
+  ccle_metadata$TissueOfOrigin <- replace(ccle_metadata$TissueOfOrigin, ccle_metadata$TissueOfOrigin %in% 
+                                            c("LUNG_NSC_TISSUE", "LUNG_SMALL_CELL_TISSUE"), "LUNG_TISSUE")
+  ccle_metadata <- ccle_metadata[ccle_metadata$CancerType %in% cellLines_to_keep,]
+  ccle_metadata$Met <- ifelse(sub("_TISSUE","", ccle_metadata$TissueOfOrigin, fixed=TRUE) == ccle_metadata$CancerType,
+                              "PRIMARY","MET")
+  
+  ## Dict
+  CCLE_canc_dict <- ccle_metadata$CancerType
+  names(CCLE_canc_dict) <- ccle_metadata$Sample
+  CCLE_canc_dict["DMS273_LUNG"] <- "LUNG"
+  CCLE_canc_dict["DMS454_LUNG"] <- "LUNG"
+  
+  CCLE_origin_dict <- ccle_metadata$TissueOfOrigin
+  names(CCLE_origin_dict) <- ccle_metadata$Sample
+  CCLE_origin_dict["DMS273_LUNG"] <- "PLEURA_TISSUE"
+  CCLE_origin_dict["DMS454_LUNG"] <- "LUNG"
+  
+  ## Load CCLE
+  load(file="/stornext/Home/data/allstaff/w/whitfield.h/data_load/CCLE_DGE.Rdata") # CCLE_DGE
+  CCLE_DGE <- CCLE_DGE[,rownames(CCLE_DGE$samples) %in% ccle_metadata[ccle_metadata$CancerType %in% cellLines_to_keep,]$Sample]
+  
+  CCLE_DGE$samples$cancerType <- as.vector(CCLE_canc_dict[rownames(CCLE_DGE$samples)])
+  CCLE_DGE$samples$tissueOrigin <- as.vector(CCLE_origin_dict[rownames(CCLE_DGE$samples)])
+  
+  if (!(return=="BRCA")){
+    score_x <- singscore_df[(singscore_df$Dataset=="CCLE") & (singscore_df$Sig %in% c(SIGS_vec)) ,]
+    score_x_piv = score_x %>% pivot_wider(names_from = Sig, values_from = Score)
+    score_x_piv$tissueOrigin <- as.vector(CCLE_origin_dict[score_x_piv$Sample])
+    score_x_piv$Type <- ifelse(sub("_TISSUE","", score_x_piv$tissueOrigin, fixed=TRUE) == score_x_piv$Sample_type, "PRIMARY", "MET")
+    
+    score_x_long <- score_x_piv %>% pivot_longer(cols=SIGS_vec, names_to ="Sig", values_to = "Score")
+    score_x_long <- score_x_long[score_x_long$Sig %in% SIGS_vec,]
+    
+    return(score_x_long)
+  }
+  
+  ## BrCa Subtypes
+  CCLE_meta <- read.table("/stornext/Home/data/allstaff/w/whitfield.h/data/CCLE/CCLE_breastsubtype_jiang.txt", sep="\t", header=TRUE)
+  meta_names <- toupper(gsub("\\.", "", gsub("-", "", gsub(" ", "", CCLE_meta$Cell.line.name))))
+  CCLE_meta$Name <- meta_names
+  idx_ccle <- unlist(lapply(strsplit(colnames(CCLE_DGE), "_"), function(x){x[[1]]})) %in% meta_names
+  CCLE_brca <- CCLE_DGE[,idx_ccle]
+  
+  name_idx <- match(CCLE_meta$Name, unlist(lapply(strsplit(colnames(CCLE_brca), "_"), function(x){x[[1]]})))
+  CCLE_meta <- CCLE_meta[!(is.na(name_idx)),]
+  name_idx <- match(unlist(lapply(strsplit(colnames(CCLE_brca), "_"), function(x){x[[1]]})), CCLE_meta$Name)
+  CCLE_brca$samples$PAM50 <- CCLE_meta$PAM50.mRNA[name_idx]
+  CCLE_brca$samples$subtype <- CCLE_meta$Our.classification[name_idx]
+  CCLE_brca$samples$cellLine <- CCLE_meta$Name[name_idx]
+  
+  ## Subset scores
+  score_x <- singscore_df[(singscore_df$Dataset=="CCLE") & (singscore_df$Sig %in% c(SIGS_vec)) ,]
+  score_x_piv = score_x %>% pivot_wider(names_from = Sig, values_from = Score)
+  score_x_piv$tissueOrigin <- as.vector(CCLE_origin_dict[score_x_piv$Sample])
+  score_x_piv$Type <- ifelse(sub("_TISSUE","", score_x_piv$tissueOrigin, fixed=TRUE) == score_x_piv$Sample_type, "PRIMARY", "MET")
+  score_x_piv <- score_x_piv[score_x_piv$Sample_type %in% c("BREAST"),]
+  ccle_idx <- match(score_x_piv$Sample,rownames(CCLE_brca$samples))
+  score_x_piv$subtype <- CCLE_brca$samples$subtype[ccle_idx]
+  score_x_piv$PAM50 <- CCLE_brca$samples$PAM50[ccle_idx]
+  
+  score_x_long <- score_x_piv %>% pivot_longer(cols=SIGS_vec, names_to ="Sig", values_to = "Score")
+  score_x_long <- score_x_long[score_x_long$Sig %in% SIGS_vec,]
+  
+  return(score_x_long)
+}
+
+
+
+##### ----- LOAD SIGNATURES --------------------------------------------
+
+
+GetMSigDB <- function(database="Hallmarks"){
+  
+  if (substr(getwd(), 2, 9) == "stornext"){
+    Hallmark_Geneset_DIR="/stornext/Home/data/allstaff/w/whitfield.h/data_load/genesets/h.all.v7.0.symbols.gmt"
+    C2_DIR="/stornext/Home/data/allstaff/w/whitfield.h/data_load/genesets/c2.all.v7.1.symbols.gmt"
+    SC_DIR="/stornext/Home/data/allstaff/w/whitfield.h/data_load/genesets/scsig.all.v1.0.1.symbols.gmt"
+  } else {
+    Hallmark_Geneset_DIR="C:\\Users\\whitfield.h\\Desktop\\Projects\\B_I_G_Data\\GeneSets\\MSigDB\\msigdb.v7.2.symbols.gmt"
+    C2_DIR="C:\\Users\\whitfield.h\\Desktop\\Projects\\B_I_G_Data\\GeneSets\\MSigDB\\c2.all.v7.1.symbols.gmt"
+    SC_DIR="C:\\Users\\whitfield.h\\Desktop\\Projects\\B_I_G_Data\\GeneSets\\MSigDB\\scsig.all.v1.0.1.symbols.gmt"
+  }
+  directories <- c(Hallmark_Geneset_DIR, C2_DIR, SC_DIR)
+  names(directories) <- c("Hallmarks", "C2", "SC")
+  
+  DIR <- directories[[database]]
+  
+  geneset_lst <- list()
+  conn <- file(DIR,open="r")
+  linn <-readLines(conn)
+  for (i in 1:length(linn)){
+    iLine <- linn[i]
+    iLine <- strsplit(iLine, "\t")
+    iName <- iLine[[1]][1]
+    iList <- iLine[[1]]
+    iList <- iList[3:length(iList)]
+    geneset_lst[[iName]] <- iList
+  }
+  close(conn)
+  return(geneset_lst)
+}
+
+
+LoadEM <- function(GENESET_DIR="/stornext/Home/data/allstaff/w/whitfield.h/BIG_DATA/GeneSets/",
+                   sig_type="cellLine"){
+  
+  if (sig_type == "cellLine"){
+    sig_str = "epiMes_cellLine"
+  } else {
+    sig_str = "epiMes_tumor"
+  }
+  
+  EM_genes = list()
+  
+  thiery_emt <- read.table(paste0(GENESET_DIR, "Thiery_EMTsignature_both_tumour_cellLine_EntrezIDs.txt", ""), sep="\t", stringsAsFactors=FALSE, header=TRUE)
+  genelist=as.character(thiery_emt$HGNC.symbol)[thiery_emt[[sig_str]] %in% 'epi']
+  EM_genes$Tan_Epi =genelist[!is.na(genelist)]
+  
+  genelist=as.character(thiery_emt$HGNC.symbol)[thiery_emt[[sig_str]] %in% 'mes']
+  EM_genes$Tan_Mes =genelist[!is.na(genelist)]
+  
+  return(EM_genes)
+}
+
+## ORGANOTROPISM SINGATURES ----------------------------------
+
+
+MakeSigs <- function(SIG_DIR="/stornext/Home/data/allstaff/w/whitfield.h/PhD_Aggressiveness/sigs/"){
+  
+  Organotropism_sigs <- list()
+  
+  ## LITERATURE CURATED
+  ## Chen et al. (From Fig 1) -- https://www.nature.com/articles/s41698-018-0047-0
+  ## -- https://link.springer.com/article/10.1007/s10911-007-9047-3
+  
+  ## + downregulation of ECM genes
+  ## In liver metastases from both colorectal and breast cancer patients, an angiogenesis-independent growth pattern of tumor cells was observed [48]
+  ## Tumor cells replace hepatocytes at the tumor-liver interface, preserving the liver architecture and co-opting sinusoidal blood vessels.
+  Organotropism_sigs$Liver_lit <- c("CXCR4", "CXCL12", "IL6", "IL6R", "CDH2",
+                  "ITGA5", "ITGA2", "ITGB1",  # INTEGRIN A2B1, A5B1
+                  "LOX", "SPP1", "VEGFA", "VEGFB", "VEGFC", "VEGFD", #HIF-regulated
+                  "TWIST1", "TWIST2",
+                  "ROR2", "RYK", "PTK7" # Beta-catenin-independent Wnt pathways
+                  )
+  ## + TN brca
+  ## +  NFκB was found to be important for lung metastasis; inhibitors of the NFκB pathway reduce lung metastasis (Minn et al, 2005)
+  Organotropism_sigs$Lung_lit <- c("TGFB1", "TGFBR1", "TGFB2", "TGFBR2", "EGFR", "EGF", "EREG", # Growth factors + receptors
+                 "VEGFA", "VEGFB", "VEGFC", "VEGFD",
+                  "MMP1", "MMP2", 
+                  "LOX", "PTGS2", # COX2
+                 "VEGFA", "VEGFB", "VEGFC", "VEGFD", #HIF-regulated
+                  "GALNT1", "GALNT2","GALNT3", "GALNT4","GALNT5", "GALNT6","GALNT7","GALNT8", "GALNT9",
+                  "DAND5", # Coco, BMP inhibitor
+                "CXCR4", "CCR7", "CXCL12", "CCL21", "CLCA2",
+                "ITGA6", "ITGB4", 
+                "SPARC", "VCAM1", "IL13", "IL13RA2", 
+                "FSCN1", "TNC" # From Massague talk -- Also "Extravasation, Seeding & Colonization" genes
+  )
+  
+  ## 7-GENE SIGNATURE -- https://cancerres.aacrjournals.org/content/68/15/6092
+  Organotropism_sigs$Lung_Landemaine <- c("DSC2", "HORMAD1", "TFCP2L1", "UGT8", "ITGB8", "ANP32E", "FERMT1")
+  
+  ## https://bmccancer.biomedcentral.com/articles/10.1186/s12885-019-5554-z
+  Organotropism_sigs$VisceralMet <- c("WDR6", "CDYL", "ATP6V0A4", "CHAD", "IDUA", "MYL5", "PREP", "RTN4IP1", "BTG2", "TPRG1", "ABHD14A", "KIF18A", "S100PBP","BEND3")
+
+  # https://www.nature.com/articles/nature03799#MOESM1
+  MinnLung <- read_excel(paste0(SIG_DIR,"Minn2005.xls"),sheet=2, skip=1, range="A2:E56", col_names = TRUE)
+  Organotropism_sigs$Lung_Minn <- MinnLung$Symbol
+
+  return(Organotropism_sigs)
+}
+
+
+## LEGO SINGATURES ----------------------------------
+
+LoadLEGOSigs <- function(DE_OUTPUT_DIR = "/wehisan/home/allstaff/w/whitfield.h/PhD_Aggressiveness/output/DE/"){
+  
+  LEGO_sigs <- list()
+  
+  ## CLONE SIGS -------
+  Clone_ttTable_ALL <- read.table(paste(DE_OUTPUT_DIR,"CloneDEgenes_ALL.txt", sep=""), sep="\t", row.names=1)
+  Clone_ttTable_METS <- read.table(paste(DE_OUTPUT_DIR,"CloneDEgenes_METS.txt", sep=""), sep="\t", row.names=1)
+  
+  Clone_ttPCATable_ALL <- read.table(paste(DE_OUTPUT_DIR,"CloneDEgenes_PCAfiltered_ALL.txt", sep=""), 
+                                     sep="\t", row.names=1)
+  Clone_ttPCATable_METS <- read.table(paste(DE_OUTPUT_DIR,"CloneDEgenes_PCA_filtered_METS.txt", sep=""), 
+                                      sep="\t", row.names=1)
+  
+  LEGO_sigs$CloneUP <- intersect(Clone_ttTable_ALL[Clone_ttTable_ALL$logFC>0,]$hgnc_symbol, 
+                      Clone_ttTable_METS[Clone_ttTable_METS$logFC>0,]$hgnc_symbol)
+  LEGO_sigs$CloneDN <- intersect(Clone_ttTable_ALL[Clone_ttTable_ALL$logFC<0,]$hgnc_symbol, 
+                      Clone_ttTable_METS[Clone_ttTable_METS$logFC<0,]$hgnc_symbol)
+  LEGO_sigs$CloneUP_PCA <- intersect(Clone_ttPCATable_ALL[Clone_ttPCATable_ALL$logFC>0,]$hgnc_symbol, 
+                          Clone_ttPCATable_METS[Clone_ttPCATable_METS$logFC>0,]$hgnc_symbol)
+  LEGO_sigs$CloneDN_PCA <- intersect(Clone_ttPCATable_ALL[Clone_ttPCATable_ALL$logFC<0,]$hgnc_symbol, 
+                          Clone_ttPCATable_METS[Clone_ttPCATable_METS$logFC<0,]$hgnc_symbol)
+  
+  ## ORGAN SIGS -------
+  Organ_ttTable_ALL <- read.table(paste(DE_OUTPUT_DIR,"OrganDEgenes_ALL.txt", sep=""), sep="\t", row.names=1)
+  Organ_ttTable_LL <- read.table(paste(DE_OUTPUT_DIR,"OrganDEgenes_LL.txt", sep=""), sep="\t", row.names=1)
+  Organ_PCAttTable_LL <- read.table(paste(DE_OUTPUT_DIR,"OrganDEgenes_PCAfiltered_LL.txt", sep=""), 
+                                     sep="\t", row.names=1)
+  
+  LEGO_sigs$OrganUP <- intersect(Organ_ttTable_ALL[!(Organ_ttTable_ALL$hgnc_symbol=="") & (Organ_ttTable_ALL$logFC>0),]$hgnc_symbol, 
+                                 Organ_ttTable_LL[!(Organ_ttTable_LL$hgnc_symbol=="") & (Organ_ttTable_LL$logFC>0),]$hgnc_symbol)
+  LEGO_sigs$OrganDN <- intersect(Organ_ttTable_ALL[!(Organ_ttTable_ALL$hgnc_symbol=="") & (Organ_ttTable_ALL$logFC<0),]$hgnc_symbol, 
+                                 Organ_ttTable_LL[!(Organ_ttTable_LL$hgnc_symbol=="") & (Organ_ttTable_LL$logFC<0),]$hgnc_symbol)
+  LEGO_sigs$OrganUP_PCA <- Organ_PCAttTable_LL[!(Organ_PCAttTable_LL$hgnc_symbol=="") & (Organ_PCAttTable_LL$logFC>0),]$hgnc_symbol
+  LEGO_sigs$OrganDN_PCA <- Organ_PCAttTable_LL[!(Organ_PCAttTable_LL$hgnc_symbol=="") & (Organ_PCAttTable_LL$logFC<0),]$hgnc_symbol
+  
+  return(LEGO_sigs)
+}
+
+## SAVCI 14-GENE MET SIGNATURE -- https://bmccancer.biomedcentral.com/articles/10.1186/s12885-019-5554-z#Sec2
+
+Savci <- c("WDR6", "CDYL", "ATP6V0A4", "CHAD", "IDUA", "MYL5", "PREP", "RTN4IP1", "BTG2", "TPRG1", "ABHD14A", "KIF18A", "S100PBP","BEND3")
+
+
+
+
+## THESIS PLOT ----------------------------------
+
+
+LeGO_PCA_multiplot <- function(DGE_x, mouse_pal,organ_pal, clone_shapes, 
+                               SAVE_PATH){
+  fc <- colorRampPalette(brewer.pal(9, "BuPu"))
+  libSize_cmap <- fc(100)
+  libSizes <- round(DGE_x$samples$lib.size/max(DGE_x$samples$lib.size), 2)*100
+  libSize_cmap <- libSize_cmap[libSizes]
+  names(libSize_cmap) <- as.character(libSizes)
+  DGE_x$samples$lib.size_p <- as.character(libSizes)
+  
+  ## UNCORRECTED
+  UC_organ <- ggPCA(DGE_x$logCPM, DGE_x$samples,
+                    "organ", organ_pal,shape_str="clone", clone_shapes,
+                    LOG=TRUE, CENTRE=TRUE)
+  UC_mouse <- ggPCA(DGE_x$logCPM, DGE_x$samples,
+                    "mouse", mouse_pal,shape_str="clone", clone_shapes,
+                    LOG=TRUE, CENTRE=TRUE)
+  UC_libsize <- ggPCA(DGE_x$logCPM, DGE_x$samples,
+                      "lib.size_p", libSize_cmap,LOG=TRUE, CENTRE=TRUE)
+  
+  ## CORRECTED
+  C_organ <- ggPCA(DGE_x$batch_corrected, DGE_x$samples,
+                   "organ", organ_pal, shape_str="clone", clone_shapes,
+                   LOG=TRUE, CENTRE=TRUE)
+  C_mouse <- ggPCA(DGE_x$batch_corrected, DGE_x$samples,
+                   "mouse", mouse_pal, shape_str="clone", clone_shapes,
+                   LOG=TRUE, CENTRE=TRUE)
+  C_libsize <- ggPCA(DGE_x$batch_corrected, DGE_x$samples,
+                     "lib.size_p", libSize_cmap,LOG=TRUE, CENTRE=TRUE)
+  
+  
+  ## LEGENDS
+  libSize_cbar <- ColorBar(min(DGE_x$samples$lib.size), 
+                           max(DGE_x$samples$lib.size), 
+                           5, rev(fc(100)[min(as.numeric(
+                             DGE_x$samples$lib.size_p)):max(as.numeric(DGE_x$samples$lib.size_p))]), flip=FALSE)+
+    scale_y_continuous(labels=formatC(seq(from=min(DGE_x$samples$lib.size), 
+                                          to=max(DGE_x$samples$lib.size), length.out=5), 
+                                      format = "e", digits = 2),expand = c(0, 0))
+  
+  organ_leg <- cowplot::get_legend(C_organ+theme(legend.direction = "vertical", legend.box = "horizontal",
+                                                 legend.box.margin = margin(0, 0, 0, 0))+
+                                     guides(shape = "none",col = guide_legend(order = 1,
+                                                                              override.aes = list(size=6),title.hjust=0.5,
+                                                                              title.theme=element_text(size=16,margin=unit(c(0, 0, 0.2, 0), "cm")),
+                                                                              label.theme=element_text(size=13))))
+  mouse_leg <- cowplot::get_legend(C_mouse+theme(legend.direction = "vertical", legend.box = "horizontal",
+                                                 legend.box.margin = margin(0, 0, 0, 0))+
+                                     guides(shape = "none",col = guide_legend(order = 1,
+                                                                              override.aes = list(size=6),title.hjust=0.5,
+                                                                              title.theme=element_text(size=16,margin=unit(c(0, 0, 0.2, 0), "cm")),
+                                                                              label.theme=element_text(size=13))))
+  clone_leg <- cowplot::get_legend(C_mouse+theme(legend.direction = "vertical", legend.box = "horizontal",
+                                                 legend.box.margin = margin(0, 0, 0, 0))+
+                                     guides(col = "none",shape = guide_legend(order = 1,
+                                                                              override.aes = list(size=6),title.hjust=0.5,
+                                                                              title.theme=element_text(size=16,margin=unit(c(0, 0, 0.2, 0), "cm")),
+                                                                              label.theme=element_text(size=13))))
+  
+  ## ----- MAKE PLOTS
+  
+  horizTheme_pca <- theme(legend.position = "none",plot.margin = unit(c(0, 0.4, -0.2, 0.4), "cm"),
+                          axis.ticks.x =element_blank(),
+                          axis.text.x=element_blank(),
+                          axis.title.x=element_text(size=14, colour='white'),
+                          axis.title.y=element_text(size=14, colour='white',margin=unit(c(0, 0.4, 0, 0), "cm")))
+  
+  Uncorrected_combo <- cowplot::plot_grid(UC_mouse+horizTheme_pca+labs(title="Uncorrected")+
+                                            theme(plot.title=element_text(hjust=0.5, size=22, margin=unit(c(0, 0, 0.2, 0), "cm"))),
+                                          UC_organ+horizTheme_pca+theme(axis.title.y=element_text(colour='black',margin=unit(c(0, 0.4, 0, 0), "cm"))), 
+                                          UC_libsize+theme(legend.position = "none",plot.margin = unit(c(0, 0.4, 0, 0.4), "cm"),
+                                                           axis.title.x=element_text(size=14,colour='black'),
+                                                           axis.title.y=element_text(size=14,colour='white',margin=unit(c(0, 0.4, 0, 0), "cm"))),ncol=1)
+  
+  Corrected_combo <- cowplot::plot_grid(C_mouse+horizTheme_pca+
+                                          labs(title="Corrected")+
+                                          theme(plot.title=element_text(hjust=0.5, size=22, margin=unit(c(0, 0, 0.2, 0), "cm"))),
+                                        C_organ+horizTheme_pca+theme(axis.title.y=element_text(colour='black',margin=unit(c(0, 0.4, 0, 0), "cm"))), 
+                                        C_libsize+theme(legend.position = "none",plot.margin = unit(c(0, 0.4, 0, 0.4), "cm"),
+                                                        axis.title.x=element_text(size=14,colour='black'),
+                                                        axis.title.y=element_text(size=14,colour='white',margin=unit(c(0, 0.4, 0, 0), "cm"))),
+                                        ncol=1) #hjust =c(0, 2.2,2.2), vjust=1.5
+  Legends_combo <- grid.arrange(mouse_leg, organ_leg,clone_leg,
+                                libSize_cbar+
+                                  theme(plot.margin = margin(0,0,0,0), 
+                                        plot.title=element_text(hjust=0.5, size=16, margin=unit(c(0, 0, 0.2, 0), "cm")))+
+                                  labs(title="Library Size"), 
+                                heights = c(2,2,2,3),
+                                widths = c(1,2,1,1.5,1,1),
+                                layout_matrix=rbind(c(1,1, 1,1,1, 1),c( 2,2, 2,2,2, 2),c(3,3, 3,3, 3,3), c(NA,NA,4,NA,NA,NA)))
+  
+  
+  svg(SAVE_PATH, width=16, height=10)
+  grid.arrange(cowplot::plot_grid(Uncorrected_combo, Corrected_combo,ncol=2)+theme(plot.margin=margin(0,-220,0,0)), Legends_combo,
+               layout_matrix=rbind(c(1, NA),
+                                   c(1, 2),
+                                   c(1, 2), 
+                                   c(1,2),
+                                   c(1, 2),
+                                   c(1, NA)))#,  widths=c(1,2))
+  dev.off()
+  
+}
+
+
+
+##### ----- SINGLE CELL --------------------------------------------
+
+##### ----- BUILD MEGA SCE OBJECTS
+
+
+MakeMegaBCB <- function(RAW_sce_list,  iPerplex=20){
+  
+  ## Fix colData
+  for (iName in names(RAW_sce_list)){
+    iSCE <- RAW_sce_list[[iName]]
+    iSCE$CellID <- paste0(iName, "_", iSCE$Barcode)
+    iSCE$LeGOid <- rep(iName, length(iSCE$CellID))
+    RAW_sce_list[[iName]] <- iSCE
+  }
+  
+  ## Filter cells
+  RAW_sce_list <- lapply(RAW_sce_list, function(x) {x[,!(x$discard_MyThresh)]})
+  
+  ## Combine
+  MEGA_SCE <- CombineBCBData_raw(RAW_sce_list)
+  
+  ## Filter
+  MEGA_SCE <- MEGA_SCE[as.vector(rowSums(counts(MEGA_SCE))>0),]
+  
+  ## Normalise
+  MEGA_SCE <- NormSC(MEGA_SCE)
+  
+  ## tSNE
+  MEGA_SCE <- runTSNE(MEGA_SCE, exprs_values = "logcounts", scale=FALSE, perplexity=iPerplex)
+  
+  ## UMAP
+  MEGA_SCE <- runUMAP(MEGA_SCE, exprs_values = "logcounts", scale=FALSE)
+  
+  ## PCA
+  MEGA_SCE <- runPCA(MEGA_SCE, exprs_values = "logcounts", scale=FALSE)
+  
+  ## Clustering
+  g <- buildSNNGraph(MEGA_SCE, k=20,  assay.type = "logcounts")
+  clust <- igraph::cluster_walktrap(g)$membership
+  MEGA_SCE$cluster_k20_ALL  <- factor(clust)
+  
+  return(MEGA_SCE)
+  
+  ### --- Save to pickle object for Python
+  # library("reticulate")
+  # py_save_object(logcounts(Mega_BCB_sce),  filename=paste0(SAVEDATA_DIR, "Mega_BCB_forPython.pickle", ""), pickle = "pickle")
+  # py_save_object(as.data.frame(colData(Mega_BCB_sce)), filename=paste0(SAVEDATA_DIR, "BCB_MetaData_forPython.pickle", ""), pickle = "pickle")
+  
+  # Mega_BCB_NonImmune <- Mega_BCB_sce[,Mega_BCB_sce$CellAtlas_labels %in% c("Stem Cell", "Fibroblasts", "Smooth Muscle", "Epithelial")]
+  # py_save_object(as.matrix(logcounts(Mega_BCB_NonImmune)),  filename=paste0(SAVEDATA_DIR, "Mega_BCB_NonImmune_forPython.pickle", ""), pickle = "pickle")
+  # py_save_object(as.data.frame(colData(Mega_BCB_NonImmune)), filename=paste0(SAVEDATA_DIR, "BCB_MetaData_NonImmune_forPython.pickle", ""), pickle = "pickle")
+  
+}
+
+
+
+CombineBCBData_raw <- function(LEGO_lst){
+  
+  MEGA_SCE_counts <- cbind(as.matrix(counts(LEGO_lst$D9)),
+                           as.matrix(counts(LEGO_lst$D10)),
+                           as.matrix(counts(LEGO_lst$D11)),
+                           as.matrix(counts(LEGO_lst$E4)),
+                           as.matrix(counts(LEGO_lst$E5)))
+  
+  COLDATA <- rbind(colData(LEGO_lst$D9),
+                   colData(LEGO_lst$D10),
+                   colData(LEGO_lst$D11),
+                   colData(LEGO_lst$E4),
+                   colData(LEGO_lst$E5))
+  
+  MEGA_SCE <- SingleCellExperiment(assays=list(counts=MEGA_SCE_counts))
+  colData(MEGA_SCE) <- COLDATA
+  
+  MEGA_SCE <- GetAnnot(MEGA_SCE)
+  
+  ### Drop duplicates
+  print("-> Dropping duplicated genes")
+  MEGA_SCE <- MEGA_SCE[!(duplicated(rownames(MEGA_SCE))),]
+  
+  counts(MEGA_SCE) <- as(counts(MEGA_SCE), "sparseMatrix")
+  
+  return(MEGA_SCE)
+}
+
+ProcessSC <- function(OUTPUT_DIR, sig_lst, K_nn=20, iPerplex=30){
+  ### --- From LEGO_RC_SC.R
+  ## Stefano Genome: refdata-cellranger-GRCh38-3.0.0 -->> GRCh38.93
+  ## I used: refdata-cellranger-GRCh38-1.2.0 --> GRCh38.84
+  ## https://support.10xgenomics.com/single-cell-gene-expression/software/release-notes/build
+  DATA_DIR <- "/stornext/General/data/academic/lab_davis/Delphine_SC/data/LEGO/"
+  source("/stornext/Home/data/allstaff/w/whitfield.h/archived_stuff/PhD_Project_1/LEGO_RC_SC_Functions.R")
+  
+  SequencingDict <- setNames(c("Pool1", "Pool1",
+                               "Pool2", "Pool3",  "Pool2"), 
+                             c("D9", "D10", "D11",
+                               "E4","E5"))
+  SubcloneDict <- setNames(c("13", "2",
+                             "9", "29",  "3"), 
+                           c("D9", "D10", "D11",
+                             "E4","E5"))
+  
+  clone.pal <- c("#AFD3E6", "#E63032", "#C4C1DE", "#B15928", "#8DD3C7") #Set1??
+  names(clone.pal) <- c("13", "2", "9", "29", "3")
+  
+  
+  ### --- LOAD CELLS & QC
+  PlotQC_Andy(DATA_DIR, OUTPUT_DIR, GenesDetect=200, MitoPercent=25, sum_y=500, Mito_y=30)
+  
+  D9_sce <- LoadCells(paste(DATA_DIR, "SI-GA-D9\\outs\\raw_feature_bc_matrix\\", sep=""), 
+                      "D9", 200, 30, OUTPUT_DIR, lower=50) 
+  D10_sce <- LoadCells(paste(DATA_DIR, "SI-GA-D10\\outs\\raw_feature_bc_matrix\\", sep=""), 
+                       "D10", 200, 30, OUTPUT_DIR, lower=40)
+  D11_sce <- LoadCells(paste(DATA_DIR, "SI-GA-D11\\outs\\raw_feature_bc_matrix\\", sep=""), 
+                       "D11", 200, 30, OUTPUT_DIR, lower=40)
+  E4_sce <- LoadCells(paste(DATA_DIR, "SI-GA-E4\\outs\\raw_feature_bc_matrix\\", sep=""), 
+                      "E4", 200, 30, OUTPUT_DIR, lower=40)
+  E5_sce <- LoadCells(paste(DATA_DIR, "SI-GA-E5\\outs\\raw_feature_bc_matrix\\", sep=""), 
+                      "E5", 200, 30, OUTPUT_DIR, lower=50)
+  LEGO_lst <- list(D9_sce, D10_sce, D11_sce,
+                   E4_sce, E5_sce)
+  names(LEGO_lst) <- c("D9", "D10", "D11",
+                       "E4","E5")
+  
+  save(LEGO_lst, file=paste(DATA_DIR, "LEGO_lst_noProcessing.Rdata", sep="")) 
+  LEGO_lst_raw <- LEGO_lst
+  
+  ##### ----- Normalise and get metrics
+  LEGO_lst <- RunQC(LEGO_lst, SequencingDict, SubcloneDict)
+  PlotQC(LEGO_lst, paste0(OUTPUT_DIR, "SC_QC\\"))
+  
+  ##### ----- Process per ID
+  for (iBCB in names(LEGO_lst)){
+    print(paste0("### --- Processing ",iBCB,""))
+    
+    iDATA <- LEGO_lst[[iBCB]]
+    
+    ### KNN Clustering
+    print(paste0("-> KNN Clustering with K = ", K_nn, ""))
+    clust_labels <- ClusterKNN(iDATA, K_nn)
+    iDATA$clusters_k20  <- factor(clust_labels)
+    
+    ### Filter genes
+    print("-> Filtering genes")
+    altExp(iDATA, "GeneFiltered") <- iDATA[as.vector(rowSums(counts(iDATA)>0)>0),]
+    
+    ### Re run tSNE with filtered genes
+    print(paste0("-> Calculating tSNE with perplexity = ", iPerplex, ""))
+    iDATA <- runTSNE(iDATA, perplexity=iPerplex, scale=FALSE) # scale=FALSE
+    
+    ### UMAP
+    print("-> Running UMAP")
+    iDATA <- runUMAP(iDATA, altexp='GeneFiltered', scale=FALSE) # scale=FALSE
+    
+    LEGO_lst[[iBCB]] <- iDATA
+  }
+  
+  PlotPostProcessingQC(LEGO_lst,  paste0(OUTPUT_DIR, "SC_QC\\"))
+  for (iName in names(LEGO_lst)){
+    x <- LEGO_lst[[iName]]
+    x$CellID <- paste0(x$Barcode, "_", iName)
+    LEGO_lst[[iName]] <- x
+  }
+  
+  save(LEGO_lst, file=paste(DATA_DIR, "LEGO_lst_Processed.Rdata", sep="")) 
+  
+  
+  ##### ----- MAKE MERGED SCE 
+  # - getStableGenes() --> PCA
+  # SequencingDict
+  #data('example_sce', package = 'scMerge')
+  
+  # load(file=paste(DATA_DIR, "LEGO_lst_noProcessing.Rdata", sep=""))
+  #ControlGenes <- GetControlGenes(RAW_LEGO_lst)
+  #ensdb <- AnnotationHub()[["AH64446"]]
+  #ControlGenes$HGNC <- mapIds(ensdb,  keys=rownames(ControlGenes),keytype="GENEID", column="SYMBOL")
+  #save(ControlGenes, file=paste(DATA_DIR, "LEGO_mergeControlGenes.Rdata", sep="")) 
+  
+  load(file=paste(DATA_DIR, "LEGO_mergeControlGenes.Rdata", sep=""))
+  load(file=paste(DATA_DIR, "LEGO_lst_Processed.Rdata", sep=""))
+  
+  CONTROL_GENES <- ControlGenes$HGNC
+  LEGO_lst <- LEGO_lst[!(names(LEGO_lst) =="E5")]
+  
+  LEGO_MERGED <- CorrectBatches_scMerge(LEGO_lst, DATA_DIR, CONTROL_GENES, BATCHES_vector=as.vector(SequencingDict[names(LEGO_lst)]))
+  
+  ### --- Plot merged data
+  load(file=paste(DATA_DIR, "LEGO_MERGED.Rdata", sep=""))
+  PlotBatchEffects(LEGO_MERGED, paste0(OUTPUT_DIR, "SC_QC\\"))
+  
+  ### ---- ALTERNATIVELY
+  load(file=paste(DATA_DIR, "LEGO_lst_noProcessing.Rdata", sep=""))
+  MEGA_SCE <- MakeMegaBCB(LEGO_lst_raw,  iPerplex=20)
+  MEGA_SCE$Subclone <- as.vector(SubcloneDict[MEGA_SCE$LeGOid])
+  save(MEGA_SCE, file=paste(DATA_DIR, "LEGO_MEGA_SCE.Rdata", sep="")) 
+  
+}
+
+ScoreSC <- function(MEGA_SCE,DATA_DIR, sig_lst, PCA_name="featureSetPCA"){
+  
+  source("/stornext/Home/data/allstaff/w/whitfield.h/processing_scripts/scfunc/scSigs.R")
+  
+  ## ---- RUN VISION ----
+  ## Get Signatures
+  LEGOSigs_obj <- MakeVisionObject(sig_lst, biDirection=FALSE)
+  names(LEGOSigs_obj) <- names(sig_lst)
+  
+  ## Run VISION
+  MEGA_SCE <- Run_Vision(MEGA_SCE, LEGOSigs_obj, paste0(DATA_DIR,"LeGOVision_results"))
+  
+  ## --- FEATURE SET PCA -----
+  MEGA_SCE <- runPCA(MEGA_SCE,exprs_values = "logcounts")
+  MEGA_SCE <- runPCA(MEGA_SCE, name=PCA_name,
+                     subset_row=rownames(MEGA_SCE) %in% unique(as.vector(unlist(sig_lst)))) 
+  
+  return(MEGA_SCE)
+}
+
+
+
